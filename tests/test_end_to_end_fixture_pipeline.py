@@ -7,6 +7,7 @@ from open_dictionary.config.settings import RuntimeSettings
 from open_dictionary.contracts import DEFAULT_DEFINITION_LANGUAGE
 from open_dictionary.db.bootstrap import apply_foundation
 from open_dictionary.db.connection import get_connection
+from open_dictionary.llm.client import LLMGenerationResult
 from open_dictionary.stages.export_distribution_jsonl.schema import validate_distribution_document
 from open_dictionary.stages.curated_build.stage import run_curated_build_stage
 from open_dictionary.stages.export_distribution_jsonl.stage import run_export_distribution_jsonl_stage
@@ -32,9 +33,9 @@ class FixtureAwareFakeLLMClient:
         user_prompt: str,
         temperature: float = 0.0,
         max_tokens: int | None = None,
-    ) -> str:
+    ) -> LLMGenerationResult:
         self.calls += 1
-        marker = "Generated-field source payload:\n"
+        marker = "Generated-field source payload (JSON):\n"
         payload = json.loads(user_prompt.split(marker, 1)[1])
         definition_language_code = payload.get("definition_language", {}).get("code")
         pos_groups = []
@@ -52,13 +53,20 @@ class FixtureAwareFakeLLMClient:
                     "pos_group_id": group["pos_group_id"],
                     "pos": group["pos"],
                     "summary": summary,
-                    "usage_notes": None,
+                    "usage_note": None,
                     "meanings": [
                         {
                             "sense_id": meaning["sense_id"],
+                            "priority": "core",
                             "short_gloss": f"{meaning['sense_id']} short gloss",
                             "learner_explanation": learner_explanation.format(sense_id=meaning["sense_id"]),
                             "usage_note": usage_note,
+                            "examples": [
+                                {
+                                    "text": f"Example sentence for {meaning['sense_id']}.",
+                                    "translation": f"{meaning['sense_id']} 的例句翻译。",
+                                }
+                            ],
                         }
                         for meaning in group.get("meanings", [])
                     ],
@@ -67,6 +75,7 @@ class FixtureAwareFakeLLMClient:
         if definition_language_code == "en":
             response = {
                 "headword_summary": f"Overall English summary for {payload['headword']}.",
+                "memory_hook": "一句帮助记忆的主线。",
                 "etymology_note": None,
                 "study_notes": [f"Study the usage of {payload['headword']} in context."],
                 "pos_groups": pos_groups,
@@ -74,11 +83,19 @@ class FixtureAwareFakeLLMClient:
         else:
             response = {
                 "headword_summary": f"{payload['headword']} 的整体中文说明。",
+                "memory_hook": "一句帮助记忆的主线。",
                 "etymology_note": None,
                 "study_notes": [f"学习 {payload['headword']} 时要注意语境。"],
                 "pos_groups": pos_groups,
             }
-        return json.dumps(response, ensure_ascii=False)
+        return LLMGenerationResult(
+            content=json.dumps(response, ensure_ascii=False),
+            model="test-model",
+            api_base="http://localhost:3888/v1",
+            prompt_tokens=None,
+            completion_tokens=None,
+            total_tokens=None,
+        )
 
 
 def test_fixture_pipeline_runs_end_to_end_with_fake_llm(tmp_path: Path, temp_database_url: str) -> None:
@@ -204,7 +221,7 @@ def test_fixture_pipeline_distribution_export_rows_have_learner_facing_shape(
 
     first_doc = json.loads(output_path.read_text(encoding="utf-8").splitlines()[0])
 
-    assert first_doc["schema_version"] == "distribution_entry_v1"
+    assert first_doc["schema_version"] == "distribution_entry_v4"
     assert "entries" not in first_doc
     assert "definitions" not in first_doc
     assert "headword_summary" in first_doc

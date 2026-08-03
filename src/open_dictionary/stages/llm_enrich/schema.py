@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
 from typing import Any
+
+from open_dictionary.llm.prompt import MEANING_PRIORITIES
 
 
 def build_expected_generation_targets(entry_payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -28,7 +31,12 @@ def validate_enrichment_payload(
     if not isinstance(payload, dict):
         raise ValueError("LLM payload must be a JSON object")
 
-    required = {"headword_summary", "study_notes", "etymology_note", "pos_groups"}
+    if "�" in json.dumps(payload, ensure_ascii=False):
+        raise ValueError(
+            "LLM payload contains U+FFFD replacement characters (corrupted model output)"
+        )
+
+    required = {"headword_summary", "memory_hook", "study_notes", "etymology_note", "pos_groups"}
     missing = required - payload.keys()
     if missing:
         raise ValueError(f"LLM payload is missing required keys: {sorted(missing)}")
@@ -36,12 +44,72 @@ def validate_enrichment_payload(
     if not isinstance(payload["headword_summary"], str) or not payload["headword_summary"].strip():
         raise ValueError("LLM payload headword_summary must be a non-empty string")
 
+    if not isinstance(payload["memory_hook"], str) or not payload["memory_hook"].strip():
+        raise ValueError("LLM payload memory_hook must be a non-empty string")
+
     if payload["study_notes"] is None:
         payload["study_notes"] = []
     payload["study_notes"] = _normalize_string_list(payload["study_notes"], field_name="study_notes")
     payload["etymology_note"] = _normalize_optional_text(payload["etymology_note"], field_name="etymology_note")
 
-    pos_groups = payload["pos_groups"]
+    payload["pos_groups"] = _validate_pos_groups(payload["pos_groups"], expected_pos_targets)
+    return payload
+
+
+def validate_overview_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Validate the entry-level fields produced by a sharded overview call."""
+    if not isinstance(payload, dict):
+        raise ValueError("LLM overview payload must be a JSON object")
+
+    if "\ufffd" in json.dumps(payload, ensure_ascii=False):
+        raise ValueError(
+            "LLM payload contains U+FFFD replacement characters (corrupted model output)"
+        )
+
+    required = {"headword_summary", "memory_hook", "study_notes", "etymology_note"}
+    missing = required - payload.keys()
+    if missing:
+        raise ValueError(f"LLM overview payload is missing required keys: {sorted(missing)}")
+
+    if not isinstance(payload["headword_summary"], str) or not payload["headword_summary"].strip():
+        raise ValueError("LLM payload headword_summary must be a non-empty string")
+    if not isinstance(payload["memory_hook"], str) or not payload["memory_hook"].strip():
+        raise ValueError("LLM payload memory_hook must be a non-empty string")
+    if payload["study_notes"] is None:
+        payload["study_notes"] = []
+    payload["study_notes"] = _normalize_string_list(payload["study_notes"], field_name="study_notes")
+    payload["etymology_note"] = _normalize_optional_text(payload["etymology_note"], field_name="etymology_note")
+    return {
+        "headword_summary": payload["headword_summary"],
+        "memory_hook": payload["memory_hook"],
+        "study_notes": payload["study_notes"],
+        "etymology_note": payload["etymology_note"],
+    }
+
+
+def validate_enrichment_chunk(
+    payload: dict[str, Any],
+    *,
+    expected_pos_targets: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Validate one sharded chunk: pos_groups only, aligned to the chunk skeleton."""
+    if not isinstance(payload, dict):
+        raise ValueError("LLM chunk payload must be a JSON object")
+
+    if "\ufffd" in json.dumps(payload, ensure_ascii=False):
+        raise ValueError(
+            "LLM payload contains U+FFFD replacement characters (corrupted model output)"
+        )
+
+    if "pos_groups" not in payload:
+        raise ValueError("LLM chunk payload is missing required keys: ['pos_groups']")
+    return _validate_pos_groups(payload["pos_groups"], expected_pos_targets)
+
+
+def _validate_pos_groups(
+    pos_groups: Any,
+    expected_pos_targets: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
     if not isinstance(pos_groups, list):
         raise ValueError("LLM payload pos_groups must be an array")
 
@@ -51,7 +119,7 @@ def validate_enrichment_payload(
     for item in pos_groups:
         if not isinstance(item, dict):
             raise ValueError("Each pos_groups item must be an object")
-        for field in ("pos_group_id", "pos", "summary", "usage_notes", "meanings"):
+        for field in ("pos_group_id", "pos", "summary", "usage_note", "meanings"):
             if field not in item:
                 raise ValueError(f"pos_groups item is missing {field}")
 
@@ -73,7 +141,7 @@ def validate_enrichment_payload(
 
         if not isinstance(item["summary"], str) or not item["summary"].strip():
             raise ValueError("pos_groups.summary must be a non-empty string")
-        item["usage_notes"] = _normalize_optional_text(item["usage_notes"], field_name="pos_groups.usage_notes")
+        item["usage_note"] = _normalize_optional_text(item["usage_note"], field_name="pos_groups.usage_note")
         item["meanings"] = _validate_meanings(
             item["meanings"],
             expected_sense_ids=expected_group["sense_ids"],
@@ -85,11 +153,10 @@ def validate_enrichment_payload(
     if missing_pos_group_ids:
         raise ValueError(f"LLM payload is missing pos_group_ids: {missing_pos_group_ids}")
 
-    payload["pos_groups"] = [
+    return [
         normalized_pos_groups[item["pos_group_id"]]
         for item in expected_pos_targets
     ]
-    return payload
 
 
 def _validate_meanings(
@@ -107,7 +174,7 @@ def _validate_meanings(
     for item in meanings:
         if not isinstance(item, dict):
             raise ValueError("Each meanings item must be an object")
-        for field in ("sense_id", "short_gloss", "learner_explanation", "usage_note"):
+        for field in ("sense_id", "priority", "short_gloss", "learner_explanation", "usage_note"):
             if field not in item:
                 raise ValueError(f"meanings item is missing {field}")
 
@@ -119,10 +186,18 @@ def _validate_meanings(
         if sense_id not in expected_index:
             raise ValueError(f"LLM payload contains unexpected sense_id in pos {pos}: {sense_id}")
 
+        priority = str(item["priority"] or "").strip().lower()
+        if priority not in MEANING_PRIORITIES:
+            raise ValueError(
+                f"meanings.priority must be one of {list(MEANING_PRIORITIES)}, got {item['priority']!r}"
+            )
+        item["priority"] = priority
+
         item["short_gloss"] = _normalize_optional_text(item["short_gloss"], field_name="meanings.short_gloss")
         if not isinstance(item["learner_explanation"], str) or not item["learner_explanation"].strip():
             raise ValueError("meanings.learner_explanation must be a non-empty string")
         item["usage_note"] = _normalize_optional_text(item["usage_note"], field_name="meanings.usage_note")
+        item["examples"] = _validate_generated_examples(item.get("examples"))
         normalized_meanings[sense_id] = item
 
     missing_sense_ids = [sense_id for sense_id in expected_sense_ids if sense_id not in normalized_meanings]
@@ -130,6 +205,27 @@ def _validate_meanings(
         raise ValueError(f"LLM payload is missing sense_ids in pos {pos}: {missing_sense_ids}")
 
     return [normalized_meanings[sense_id] for sense_id in expected_sense_ids]
+
+
+def _validate_generated_examples(value: Any) -> list[dict[str, str]]:
+    # The compact retry prompt legitimately returns [], and json-mode models
+    # sometimes omit empty arrays entirely, so missing/null coerces to [].
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError("meanings.examples must be an array")
+    normalized: list[dict[str, str]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            raise ValueError("Each meanings.examples item must be an object")
+        text = item.get("text")
+        translation = item.get("translation")
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError("meanings.examples.text must be a non-empty string")
+        if not isinstance(translation, str) or not translation.strip():
+            raise ValueError("meanings.examples.translation must be a non-empty string")
+        normalized.append({"text": text.strip(), "translation": translation.strip()})
+    return normalized
 
 
 def _normalize_optional_text(value: Any, *, field_name: str) -> str | None:

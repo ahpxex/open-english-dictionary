@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-import urllib.request
 from uuid import uuid4
 
 import pytest
@@ -11,9 +10,8 @@ from open_dictionary.config.settings import RuntimeSettings
 from open_dictionary.contracts import DEFAULT_DEFINITION_LANGUAGE
 from open_dictionary.db.bootstrap import apply_foundation
 from open_dictionary.db.connection import get_connection
-from open_dictionary.llm.client import LLMClientError, OpenAICompatLLMClient
-from open_dictionary.llm.config import LLMSettings
-from open_dictionary.llm.config import load_llm_settings
+from open_dictionary.llm.client import LLMClientError, LLMGenerationResult, LiteLLMClient
+from open_dictionary.llm.config import LLMProviderSettings, LLMSettings, load_llm_settings
 from open_dictionary.llm.prompt import (
     PROMPT_VERSION,
     build_enrichment_request_payload,
@@ -29,8 +27,9 @@ from open_dictionary.stages.llm_enrich.schema import validate_enrichment_payload
 
 
 class FakeLLMClient:
-    def __init__(self, responses):
+    def __init__(self, responses, *, model: str = "test-model"):
         self._responses = list(responses)
+        self._model = model
         self.calls = 0
         self.max_tokens_seen: list[int | None] = []
 
@@ -41,13 +40,20 @@ class FakeLLMClient:
         user_prompt: str,
         temperature: float = 0.0,
         max_tokens: int | None = None,
-    ) -> str:
+    ) -> LLMGenerationResult:
         self.calls += 1
         self.max_tokens_seen.append(max_tokens)
         response = self._responses.pop(0)
         if isinstance(response, Exception):
             raise response
-        return response
+        return LLMGenerationResult(
+            content=response,
+            model=self._model,
+            api_base="http://127.0.0.1:3888/v1",
+            prompt_tokens=100,
+            completion_tokens=200,
+            total_tokens=300,
+        )
 
 
 ENGLISH_DEFINITION_LANGUAGE = {
@@ -64,6 +70,7 @@ def valid_payload(
     sense_ids = ["s1"] if sense_ids is None else sense_ids
     return {
         "headword_summary": "一个对中文学习者友好的整体说明。",
+        "memory_hook": "一句帮助记忆的主线。",
         "study_notes": ["Note one", "Note two"],
         "etymology_note": "一个简短的词源说明。",
         "pos_groups": [
@@ -71,13 +78,17 @@ def valid_payload(
                 "pos_group_id": build_pos_group_id(pos=pos, etymology_id=etymology_id),
                 "pos": pos,
                 "summary": "这个词性的整体说明。",
-                "usage_notes": "Usage note.",
+                "usage_note": "Usage note.",
                 "meanings": [
                     {
                         "sense_id": sense_id,
+                        "priority": "core",
                         "short_gloss": f"{sense_id} short gloss",
                         "learner_explanation": f"{sense_id} 的详细自然语言解释。",
                         "usage_note": f"{sense_id} usage note.",
+                        "examples": [
+                            {"text": f"An example sentence for {sense_id}.", "translation": f"{sense_id} 的例句翻译。"}
+                        ],
                     }
                     for sense_id in sense_ids
                 ],
@@ -158,9 +169,11 @@ def test_load_llm_settings_reads_values_from_env_file(tmp_path: Path) -> None:
 
     settings = load_llm_settings(env_file=env_file)
 
-    assert settings.api_base == "http://127.0.0.1:3888/v1"
-    assert settings.api_key == "EMPTY"
-    assert settings.model == "test-model"
+    assert len(settings.providers) == 1
+    assert settings.providers[0].api_base == "http://127.0.0.1:3888/v1"
+    assert settings.providers[0].api_key == "EMPTY"
+    assert settings.providers[0].model == "test-model"
+    assert settings.models == ("test-model",)
 
 
 def test_load_llm_settings_raises_when_api_is_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -173,6 +186,117 @@ def test_load_llm_settings_raises_when_api_is_missing(tmp_path: Path, monkeypatc
 
     with pytest.raises(RuntimeError, match="LLM_API"):
         load_llm_settings(env_file=env_file)
+
+
+def test_load_llm_settings_reads_provider_pool_array(monkeypatch: pytest.MonkeyPatch) -> None:
+    # This case verifies the multi-provider pool configuration contract.
+    monkeypatch.setenv(
+        "LLM_PROVIDERS",
+        json.dumps(
+            [
+                {"api": "http://one.example/v1", "model": "model-one", "key": "key-one", "rpm": 120},
+                {"api": "http://two.example/v1", "model": "model-two", "key": "key-two"},
+            ]
+        ),
+    )
+
+    settings = load_llm_settings(env_file=None)
+
+    assert len(settings.providers) == 2
+    assert settings.providers[0].api_base == "http://one.example/v1"
+    assert settings.providers[0].model == "model-one"
+    assert settings.providers[0].rpm == 120
+    assert settings.providers[1].api_base == "http://two.example/v1"
+    assert settings.providers[1].rpm is None
+    assert settings.models == ("model-one", "model-two")
+
+
+def test_load_llm_settings_provider_pool_loads_from_multiline_env_file(tmp_path: Path) -> None:
+    # This case pins the dotenv format users will actually write: a quoted
+    # multiline JSON array inside the model env file.
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "LLM_PROVIDERS='[\n"
+        '  {"api": "http://one.example/v1", "model": "model-one", "key": "key-one"},\n'
+        '  {"api": "http://two.example/v1", "model": "model-two", "key": "key-two", "rpm": 60}\n'
+        "]'\n",
+        encoding="utf-8",
+    )
+
+    settings = load_llm_settings(env_file=env_file)
+
+    assert settings.models == ("model-one", "model-two")
+    assert settings.providers[1].rpm == 60
+
+
+def test_load_llm_settings_provider_pool_takes_precedence_over_legacy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # This case pins the resolution order when both configuration styles are present.
+    monkeypatch.setenv("LLM_API", "http://legacy.example/v1")
+    monkeypatch.setenv("LLM_KEY", "legacy-key")
+    monkeypatch.setenv("LLM_MODEL", "legacy-model")
+    monkeypatch.setenv(
+        "LLM_PROVIDERS",
+        json.dumps([{"api": "http://pool.example/v1", "model": "pool-model", "key": "pool-key"}]),
+    )
+
+    settings = load_llm_settings(env_file=None)
+
+    assert settings.models == ("pool-model",)
+
+
+def test_load_llm_settings_rejects_incomplete_provider_entry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # This case prevents silently running with a half-configured provider entry.
+    monkeypatch.setenv(
+        "LLM_PROVIDERS",
+        json.dumps([{"api": "http://one.example/v1", "key": "key-one"}]),
+    )
+
+    with pytest.raises(RuntimeError, match=r"LLM_PROVIDERS\[1\] is missing the required field 'model'"):
+        load_llm_settings(env_file=None)
+
+
+def test_load_llm_settings_rejects_unknown_provider_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # This case turns field typos into startup errors instead of silently dropped settings.
+    monkeypatch.setenv(
+        "LLM_PROVIDERS",
+        json.dumps(
+            [{"api": "http://one.example/v1", "model": "model-one", "key": "key-one", "apikey": "oops"}]
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match=r"LLM_PROVIDERS\[1\] contains unknown fields: apikey"):
+        load_llm_settings(env_file=None)
+
+
+def test_load_llm_settings_rejects_invalid_providers_json(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # This case keeps malformed pool configuration loud and immediate.
+    monkeypatch.setenv("LLM_PROVIDERS", "not-json")
+
+    with pytest.raises(RuntimeError, match="LLM_PROVIDERS is not valid JSON"):
+        load_llm_settings(env_file=None)
+
+
+def test_load_llm_settings_rejects_non_integer_rpm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # This case keeps rate-limit configuration explicit and validated.
+    monkeypatch.setenv(
+        "LLM_PROVIDERS",
+        json.dumps(
+            [{"api": "http://one.example/v1", "model": "model-one", "key": "key-one", "rpm": "fast"}]
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match=r"LLM_PROVIDERS\[1\] field 'rpm' must be an integer"):
+        load_llm_settings(env_file=None)
 
 
 def test_build_user_prompt_embeds_curated_payload() -> None:
@@ -308,7 +432,7 @@ def test_validate_enrichment_payload_coerces_null_study_notes_to_empty_list() ->
 def test_validate_enrichment_payload_coerces_usage_note_lists() -> None:
     # This case captures the exact schema drift seen during a real model smoke run.
     payload = valid_payload()
-    payload["pos_groups"][0]["usage_notes"] = ["First note.", "Second note."]
+    payload["pos_groups"][0]["usage_note"] = ["First note.", "Second note."]
     payload["pos_groups"][0]["meanings"][0]["usage_note"] = ["Meaning note one.", "Meaning note two."]
 
     validated = validate_enrichment_payload(
@@ -316,7 +440,7 @@ def test_validate_enrichment_payload_coerces_usage_note_lists() -> None:
         expected_pos_targets=[{"pos_group_id": build_pos_group_id(pos="noun", etymology_id=None), "pos": "noun", "sense_ids": ["s1"]}],
     )
 
-    assert validated["pos_groups"][0]["usage_notes"] == "First note. Second note."
+    assert validated["pos_groups"][0]["usage_note"] == "First note. Second note."
     assert validated["pos_groups"][0]["meanings"][0]["usage_note"] == "Meaning note one. Meaning note two."
 
 
@@ -360,12 +484,13 @@ def test_enrich_one_entry_succeeds_with_fake_client() -> None:
         entry=entry,
         llm_client=client,
         prompt_bundle=prompt_bundle,
-        model="test-model",
         max_retries=2,
     )
 
     assert record["entry_id"] == "entry-1"
+    assert record["model"] == "test-model"
     assert record["retries"] == 0
+    assert record["generation_metadata"]["usage"]["completion_tokens"] == 200
     assert client.calls == 1
 
 
@@ -399,7 +524,6 @@ def test_enrich_one_entry_retries_before_success() -> None:
         entry=entry,
         llm_client=client,
         prompt_bundle=prompt_bundle,
-        model="test-model",
         max_retries=2,
     )
 
@@ -434,30 +558,33 @@ def test_enrich_one_entry_raises_after_max_retries() -> None:
         "input_hash": "hash",
     }
 
-    with pytest.raises(ValueError, match="still bad"):
+    with pytest.raises(llm_stage.EnrichmentError, match="still bad"):
         llm_stage.enrich_one_entry(
             entry=entry,
             llm_client=client,
             prompt_bundle=prompt_bundle,
-            model="test-model",
             max_retries=2,
         )
 
 
-def test_openai_client_wraps_timeout_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    # This case ensures transport-level timeouts enter the stage retry path instead of escaping as raw exceptions.
-    client = OpenAICompatLLMClient(
+def test_litellm_client_wraps_transport_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    # This case ensures transport-level failures enter the stage retry path instead of escaping as raw exceptions.
+    client = LiteLLMClient(
         LLMSettings(
-            api_base="http://127.0.0.1:3888/v1",
-            api_key="EMPTY",
-            model="test-model",
+            providers=(
+                LLMProviderSettings(
+                    api_base="http://127.0.0.1:3888/v1",
+                    api_key="EMPTY",
+                    model="test-model",
+                ),
+            )
         )
     )
 
     def raise_timeout(*args, **kwargs):
         raise TimeoutError("timed out")
 
-    monkeypatch.setattr(urllib.request, "urlopen", raise_timeout)
+    monkeypatch.setattr(client._router, "completion", raise_timeout)
 
     with pytest.raises(LLMClientError, match="timed out"):
         client.generate_json(system_prompt="system", user_prompt="user", max_tokens=100)
@@ -532,7 +659,7 @@ def test_iter_curated_entries_skips_existing_successes(temp_database_url: str) -
             source_table="curated.entries",
             target_table="llm.entry_enrichments",
             prompt_bundle=prompt_bundle,
-            model="test-model",
+            models=["test-model"],
             recompute_existing=False,
             limit_entries=None,
         )
@@ -583,7 +710,7 @@ def test_iter_curated_entries_does_not_skip_stale_successes(temp_database_url: s
             source_table="curated.entries",
             target_table="llm.entry_enrichments",
             prompt_bundle=prompt_bundle,
-            model="test-model",
+            models=["test-model"],
             recompute_existing=False,
             limit_entries=None,
         )
@@ -609,7 +736,7 @@ def test_iter_curated_entries_recompute_existing_returns_entries(temp_database_u
             source_table="curated.entries",
             target_table="llm.entry_enrichments",
             prompt_bundle=prompt_bundle,
-            model="test-model",
+            models=["test-model"],
             recompute_existing=True,
             limit_entries=None,
         )
@@ -766,6 +893,7 @@ def test_run_llm_enrich_stage_supports_non_default_definition_language(
             json.dumps(
                 {
                     "headword_summary": "Overall learner-facing summary.",
+                    "memory_hook": "一句帮助记忆的主线。",
                     "study_notes": ["Keep register in mind."],
                     "etymology_note": "Short etymology note.",
                     "pos_groups": [
@@ -773,10 +901,11 @@ def test_run_llm_enrich_stage_supports_non_default_definition_language(
                             "pos_group_id": build_pos_group_id(pos="noun", etymology_id=None),
                             "pos": "noun",
                             "summary": "Noun summary.",
-                            "usage_notes": None,
+                            "usage_note": None,
                             "meanings": [
                                 {
                                     "sense_id": "s1",
+                                    "priority": "core",
                                     "short_gloss": "cat",
                                     "learner_explanation": "A domestic feline animal.",
                                     "usage_note": None,
@@ -902,3 +1031,254 @@ def test_run_llm_enrich_stage_recompute_existing_enriches_again(tmp_path: Path, 
 
     assert result.processed == 1
     assert second_client.calls == 1
+
+
+def test_validate_enrichment_payload_rejects_missing_memory_hook() -> None:
+    # This case pins the v4 contract: every entry must carry a memory hook.
+    payload = valid_payload()
+    del payload["memory_hook"]
+
+    with pytest.raises(ValueError, match="memory_hook"):
+        validate_enrichment_payload(
+            payload,
+            expected_pos_targets=[{"pos_group_id": build_pos_group_id(pos="noun", etymology_id=None), "pos": "noun", "sense_ids": ["s1"]}],
+        )
+
+
+def test_validate_enrichment_payload_rejects_invalid_priority() -> None:
+    # This case keeps the priority enum closed so clients can rely on it.
+    payload = valid_payload()
+    payload["pos_groups"][0]["meanings"][0]["priority"] = "important"
+
+    with pytest.raises(ValueError, match="priority"):
+        validate_enrichment_payload(
+            payload,
+            expected_pos_targets=[{"pos_group_id": build_pos_group_id(pos="noun", etymology_id=None), "pos": "noun", "sense_ids": ["s1"]}],
+        )
+
+
+def test_validate_enrichment_payload_normalizes_priority_case() -> None:
+    # This case tolerates harmless model drift like "Core" without widening the enum.
+    payload = valid_payload()
+    payload["pos_groups"][0]["meanings"][0]["priority"] = " Core "
+
+    validated = validate_enrichment_payload(
+        payload,
+        expected_pos_targets=[{"pos_group_id": build_pos_group_id(pos="noun", etymology_id=None), "pos": "noun", "sense_ids": ["s1"]}],
+    )
+
+    assert validated["pos_groups"][0]["meanings"][0]["priority"] == "core"
+
+
+def test_validate_enrichment_payload_defaults_missing_examples_to_empty_list() -> None:
+    # This case keeps the compact retry path valid: examples may be absent.
+    payload = valid_payload()
+    del payload["pos_groups"][0]["meanings"][0]["examples"]
+
+    validated = validate_enrichment_payload(
+        payload,
+        expected_pos_targets=[{"pos_group_id": build_pos_group_id(pos="noun", etymology_id=None), "pos": "noun", "sense_ids": ["s1"]}],
+    )
+
+    assert validated["pos_groups"][0]["meanings"][0]["examples"] == []
+
+
+def test_validate_enrichment_payload_rejects_example_without_translation() -> None:
+    # This case pins the v5 contract: generated examples must be bilingual pairs.
+    payload = valid_payload()
+    payload["pos_groups"][0]["meanings"][0]["examples"] = [{"text": "Only source side."}]
+
+    with pytest.raises(ValueError, match="examples.translation"):
+        validate_enrichment_payload(
+            payload,
+            expected_pos_targets=[{"pos_group_id": build_pos_group_id(pos="noun", etymology_id=None), "pos": "noun", "sense_ids": ["s1"]}],
+        )
+
+
+def test_validate_enrichment_payload_rejects_replacement_characters() -> None:
+    # This case turns corrupted model output (U+FFFD) into a retryable failure
+    # instead of silently persisting broken text.
+    payload = valid_payload()
+    payload["pos_groups"][0]["meanings"][0]["usage_note"] = "若表示�某物打结"
+
+    with pytest.raises(ValueError, match="replacement characters"):
+        validate_enrichment_payload(
+            payload,
+            expected_pos_targets=[{"pos_group_id": build_pos_group_id(pos="noun", etymology_id=None), "pos": "noun", "sense_ids": ["s1"]}],
+        )
+
+
+def _sharded_source_payload(n_verb_senses: int = 90, n_noun_senses: int = 10) -> dict:
+    return build_generation_source_payload(
+        {
+            "entry_id": "entry-big",
+            "word": "set",
+            "normalized_word": "set",
+            "lang": "English",
+            "lang_code": "en",
+            "entry_flags": [],
+            "etymology_groups": [],
+            "pos_groups": [
+                {
+                    "pos": "verb",
+                    "etymology_id": None,
+                    "senses": [
+                        {"sense_id": f"v{i}", "gloss": f"verb gloss {i}"}
+                        for i in range(1, n_verb_senses + 1)
+                    ],
+                },
+                {
+                    "pos": "noun",
+                    "etymology_id": None,
+                    "senses": [
+                        {"sense_id": f"n{i}", "gloss": f"noun gloss {i}"}
+                        for i in range(1, n_noun_senses + 1)
+                    ],
+                },
+            ],
+        }
+    )
+
+
+def test_plan_generation_chunks_keeps_small_groups_whole_and_splits_giants() -> None:
+    # This case pins the chunk planner: whole groups pack together, only
+    # over-budget groups split, and skeleton order is preserved.
+    source = _sharded_source_payload(n_verb_senses=90, n_noun_senses=10)
+
+    chunks = llm_stage.plan_generation_chunks(source, budget=40)
+
+    sizes = [sum(len(g["meanings"]) for g in chunk) for chunk in chunks]
+    assert sizes == [40, 40, 10, 10]
+    assert [g["pos"] for chunk in chunks for g in chunk] == ["verb", "verb", "verb", "noun"]
+    assert all(
+        sum(len(g["meanings"]) for g in chunk) <= 40 for chunk in chunks
+    )
+    all_ids = [m["sense_id"] for chunk in chunks for g in chunk for m in g["meanings"]]
+    assert all_ids == [f"v{i}" for i in range(1, 91)] + [f"n{i}" for i in range(1, 11)]
+
+
+class ShardAwareFakeLLMClient:
+    """Answers overview and chunk prompts with contract-valid payloads."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def generate_json(self, *, system_prompt: str, user_prompt: str, temperature: float = 0.0, max_tokens: int | None = None) -> LLMGenerationResult:
+        if user_prompt.startswith("Entry digest"):
+            self.calls.append("overview")
+            response = {
+                "headword_summary": "整体说明。",
+                "memory_hook": "一句记忆主线。",
+                "study_notes": [],
+                "etymology_note": None,
+            }
+        else:
+            marker = "Partial-entry source payload (JSON):\n"
+            payload = json.loads(user_prompt.split(marker, 1)[1])
+            self.calls.append("chunk")
+            groups = []
+            for group in payload["pos_groups"]:
+                groups.append(
+                    {
+                        "pos_group_id": group["pos_group_id"],
+                        "pos": group["pos"],
+                        "summary": f"{group['pos']} 概述。",
+                        "usage_note": None,
+                        "meanings": [
+                            {
+                                "sense_id": m["sense_id"],
+                                "priority": "common",
+                                "short_gloss": None,
+                                "learner_explanation": f"{m['sense_id']} 的解释。",
+                                "usage_note": None,
+                                "examples": [
+                                    {"text": f"Example {m['sense_id']}.", "translation": f"{m['sense_id']} 例句。"}
+                                ],
+                            }
+                            for m in group["meanings"]
+                        ],
+                    }
+                )
+            response = {"pos_groups": groups}
+        return LLMGenerationResult(
+            content=json.dumps(response, ensure_ascii=False),
+            model="test-model",
+            api_base="http://127.0.0.1:3888/v1",
+            prompt_tokens=50,
+            completion_tokens=100,
+            total_tokens=150,
+        )
+
+
+def test_enrich_one_entry_shards_large_entries_and_assembles_full_payload() -> None:
+    # This case drives the engineered long-entry path end to end: overview
+    # call, chunked generation, deterministic assembly, full-skeleton check.
+    client = ShardAwareFakeLLMClient()
+    prompt_bundle = build_prompt_bundle(
+        prompt_version=PROMPT_VERSION,
+        definition_language=DEFAULT_DEFINITION_LANGUAGE,
+    )
+    source = _sharded_source_payload(n_verb_senses=90, n_noun_senses=10)
+    entry = {
+        "entry_id": "entry-big",
+        "payload": {},
+        "request_payload": {"entry": source},
+        "input_hash": "hash-big",
+    }
+
+    record = llm_stage.enrich_one_entry(
+        entry=entry,
+        llm_client=client,
+        prompt_bundle=prompt_bundle,
+        max_retries=2,
+    )
+
+    expected_chunks = len(llm_stage.plan_generation_chunks(source, budget=llm_stage.CHUNK_SENSE_BUDGET))
+    assert client.calls == ["overview"] + ["chunk"] * expected_chunks
+    payload = record["response_payload"]
+    assert payload["memory_hook"] == "一句记忆主线。"
+    verb_group = payload["pos_groups"][0]
+    assert len(verb_group["meanings"]) == 90
+    assert verb_group["summary"] == "verb 概述。"
+    assert record["generation_metadata"]["sharded"] is True
+    assert record["generation_metadata"]["chunk_count"] == expected_chunks
+    assert record["generation_metadata"]["usage"]["completion_tokens"] == (expected_chunks + 1) * 100
+    assert record["retries"] == 0
+    assert record["model"] == "test-model"
+
+
+def test_enrich_one_entry_small_entries_stay_single_call() -> None:
+    # This case protects the fast path: small entries never shard.
+    client = FakeLLMClient([json.dumps(valid_payload("noun"))])
+    prompt_bundle = build_prompt_bundle(
+        prompt_version=PROMPT_VERSION,
+        definition_language=DEFAULT_DEFINITION_LANGUAGE,
+    )
+    request_entry = build_generation_source_payload(
+        {
+            "entry_id": "entry-1",
+            "word": "cat",
+            "normalized_word": "cat",
+            "lang": "English",
+            "lang_code": "en",
+            "entry_flags": [],
+            "etymology_groups": [],
+            "pos_groups": [{"pos": "noun", "etymology_id": None, "senses": [{"sense_id": "s1"}]}],
+        }
+    )
+    entry = {
+        "entry_id": "entry-1",
+        "payload": {},
+        "request_payload": {"entry": request_entry},
+        "input_hash": "hash",
+    }
+
+    record = llm_stage.enrich_one_entry(
+        entry=entry,
+        llm_client=client,
+        prompt_bundle=prompt_bundle,
+        max_retries=2,
+    )
+
+    assert client.calls == 1
+    assert "sharded" not in record["generation_metadata"]
