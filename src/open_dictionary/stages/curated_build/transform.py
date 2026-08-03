@@ -63,7 +63,14 @@ def build_curated_entry(raw_rows: list[dict[str, Any]]) -> CuratedBuildOutput:
 
     first = kept_rows[0]
     lang_code = normalize_text(first.get("lang_code")) or "_"
-    normalized_word = normalize_word(first.get("word")) or "_"
+    # The entry identity key must be exactly the stream grouping key computed
+    # by the reader's SQL (lower(word)). Recomputing it here with a different
+    # Unicode normalization would let two SQL groups collide on one entry_id.
+    normalized_word = (
+        normalize_nullable_text(first.get("normalized_word"))
+        or normalize_word(first.get("word"))
+        or "_"
+    )
     word = select_display_word(kept_rows)
     lang = select_display_lang(kept_rows)
     entry_id = str(uuid5(NAMESPACE_URL, f"{lang_code}|{normalized_word}"))

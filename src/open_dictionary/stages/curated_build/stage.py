@@ -12,6 +12,7 @@ from open_dictionary.db.connection import get_connection
 from open_dictionary.pipeline import ProgressCallback, ThrottledProgressReporter, emit_progress, complete_run, fail_run, start_run
 
 from .transform import CuratedBuildOutput, TriageItem, build_curated_entry
+from .word_selection import WordSelectionRule
 
 
 CURATED_BUILD_STAGE = "entries.assemble"
@@ -26,6 +27,7 @@ DEFAULT_PERSIST_BATCH_SIZE = 1000
 class CuratedBuildResult:
     run_id: UUID
     groups_processed: int
+    groups_filtered_out: int
     entries_written: int
     relations_written: int
     triage_written: int
@@ -41,6 +43,7 @@ def run_curated_build_stage(
     lang_codes: list[str] | None = None,
     limit_groups: int | None = None,
     replace_existing: bool = False,
+    word_selection: WordSelectionRule | None = None,
     parent_run_id: UUID | None = None,
     progress_callback: ProgressCallback | None = None,
 ) -> CuratedBuildResult:
@@ -63,6 +66,9 @@ def run_curated_build_stage(
                 "lang_codes": lang_codes or [],
                 "limit_groups": limit_groups,
                 "replace_existing": replace_existing,
+                "word_selection": (
+                    word_selection.as_metadata() if word_selection is not None else None
+                ),
                 "source_run_ids": source_run_ids,
                 "source_snapshot_ids": source_snapshot_ids,
             },
@@ -70,6 +76,7 @@ def run_curated_build_stage(
         )
 
     groups_processed = 0
+    groups_filtered_out = 0
     entries_written = 0
     relations_written = 0
     triage_written = 0
@@ -78,6 +85,14 @@ def run_curated_build_stage(
     pending_entries = 0
     pending_relations = 0
     pending_triage = 0
+
+    def group_is_selected(group_key: tuple[str, str]) -> bool:
+        if word_selection is None:
+            return True
+        lang_code, normalized_word = group_key
+        if lang_code != word_selection.lang:
+            return True
+        return word_selection.accepts(normalized_word)
 
     try:
         with get_connection(settings) as conn:
@@ -89,6 +104,9 @@ def run_curated_build_stage(
                 lang_codes=lang_codes or [],
                 limit_groups=limit_groups,
                 replace_existing=replace_existing,
+                word_selection=(
+                    word_selection.as_metadata() if word_selection is not None else None
+                ),
             )
             if replace_existing:
                 _reset_outputs(conn, target_table=target_table, relations_table=relations_table, triage_table=triage_table)
@@ -146,17 +164,21 @@ def run_curated_build_stage(
                 if current_key is None:
                     current_key = next_key
                 if next_key != current_key:
-                    output = build_curated_entry(current_rows)
-                    pending_outputs.append(output)
-                    pending_groups += 1
-                    pending_entries += 1 if output.entry is not None else 0
-                    pending_relations += len(output.relations)
-                    pending_triage += len(output.triage_items)
-                    if len(pending_outputs) >= DEFAULT_PERSIST_BATCH_SIZE:
-                        flush_pending_outputs()
+                    if group_is_selected(current_key):
+                        output = build_curated_entry(current_rows)
+                        pending_outputs.append(output)
+                        pending_groups += 1
+                        pending_entries += 1 if output.entry is not None else 0
+                        pending_relations += len(output.relations)
+                        pending_triage += len(output.triage_items)
+                        if len(pending_outputs) >= DEFAULT_PERSIST_BATCH_SIZE:
+                            flush_pending_outputs()
+                    else:
+                        groups_filtered_out += 1
                     reporter.report(
                         event="build_progress",
                         groups_processed=groups_processed + pending_groups,
+                        groups_filtered_out=groups_filtered_out,
                         entries_written=entries_written + pending_entries,
                         relations_written=relations_written + pending_relations,
                         triage_written=triage_written + pending_triage,
@@ -171,12 +193,15 @@ def run_curated_build_stage(
                     current_rows.append(raw_row)
 
             if current_rows and (limit_groups is None or groups_processed < limit_groups):
-                output = build_curated_entry(current_rows)
-                pending_outputs.append(output)
-                pending_groups += 1
-                pending_entries += 1 if output.entry is not None else 0
-                pending_relations += len(output.relations)
-                pending_triage += len(output.triage_items)
+                if current_key is not None and group_is_selected(current_key):
+                    output = build_curated_entry(current_rows)
+                    pending_outputs.append(output)
+                    pending_groups += 1
+                    pending_entries += 1 if output.entry is not None else 0
+                    pending_relations += len(output.relations)
+                    pending_triage += len(output.triage_items)
+                else:
+                    groups_filtered_out += 1
 
             flush_pending_outputs(force=True)
 
@@ -185,9 +210,13 @@ def run_curated_build_stage(
                 run_id=run_id,
                 stats={
                     "groups_processed": groups_processed,
+                    "groups_filtered_out": groups_filtered_out,
                     "entries_written": entries_written,
                     "relations_written": relations_written,
                     "triage_written": triage_written,
+                    "word_selection": (
+                        word_selection.as_metadata() if word_selection is not None else None
+                    ),
                     "source_run_ids": source_run_ids,
                     "source_snapshot_ids": source_snapshot_ids,
                 },
@@ -197,6 +226,7 @@ def run_curated_build_stage(
                 stage=CURATED_BUILD_STAGE,
                 event="build_complete",
                 groups_processed=groups_processed,
+                groups_filtered_out=groups_filtered_out,
                 entries_written=entries_written,
                 relations_written=relations_written,
                 triage_written=triage_written,
@@ -205,6 +235,7 @@ def run_curated_build_stage(
         return CuratedBuildResult(
             run_id=run_id,
             groups_processed=groups_processed,
+            groups_filtered_out=groups_filtered_out,
             entries_written=entries_written,
             relations_written=relations_written,
             triage_written=triage_written,

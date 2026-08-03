@@ -933,6 +933,34 @@ The following is illustrative, not exhaustive:
 
 This is still a word-centric model, not a Wiktionary mirror.
 
+## Headword Selection Rule (word_selection_v2, user-approved 2026-08-03)
+
+Full-snapshot builds do not curate every headword in the source language.
+The approved selection rule for English builds is:
+
+- Rule id: `word_selection_v2_phrase_threshold`.
+- Frequency source: the `wordfreq` Python package (version recorded per run).
+- Single-word boundary: the Zipf frequency of the top-N-th most frequent
+  token, with N = 40,000 approved for the English learner dictionary.
+  Single words and proper nouns are selected iff
+  `zipf_frequency(headword, lang) >= boundary`.
+- Phrase boundary: multiword headwords must clear `phrase_min_zipf`, with
+  4.5 approved for the English learner dictionary. wordfreq scores phrases
+  with a combined-token estimate that systematically overstates phrase
+  frequency, so phrases are held to this stricter boundary. (v1 applied one
+  unified boundary; it admitted roughly 124k long-tail phrases and was
+  superseded the next day.)
+- The rule only filters groups whose `lang_code` equals the rule language.
+  Groups in other languages pass through unfiltered.
+- Every curated run records `rule_version`, `lang`, `top_n`, the computed
+  `min_zipf` boundary, `phrase_min_zipf`, the wordfreq package version, and
+  the count of filtered-out groups in its run metadata.
+
+Operationally the approved configuration is `--top-words 40000
+--phrase-min-zipf 4.5` on `assemble-entries` or `run`. Omitting
+`--top-words` disables selection entirely; no implicit filtering is
+allowed.
+
 ## What this rulebook intentionally excludes
 
 This document does not yet define:
