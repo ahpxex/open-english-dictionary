@@ -44,6 +44,10 @@ from .schema import (
 LLM_ENRICH_STAGE = "definitions.generate"
 PERSIST_COMMIT_INTERVAL = 25
 RETRY_TEMPERATURE = 0.3
+# When every deployment in the provider pool is cooling down, litellm refuses
+# the call for ~cooldown_time seconds; short content-level retry sleeps would
+# land inside that same window and burn the whole retry budget.
+POOL_COOLDOWN_BACKOFF_SECONDS = 35.0
 
 
 @dataclass(frozen=True)
@@ -514,7 +518,7 @@ def _call_with_retries(
             last_error = exc
             if attempt >= max_retries:
                 break
-            time.sleep(min(0.5 * attempt, 2.0))
+            time.sleep(_retry_delay(exc, attempt))
 
     assert last_error is not None
     if isinstance(last_error, LLMClientError) and last_error.model is not None:
@@ -534,6 +538,12 @@ def _call_with_retries(
             "last_api_base": last_generation.api_base if last_generation is not None else None,
         },
     ) from last_error
+
+
+def _retry_delay(error: Exception, attempt: int) -> float:
+    if isinstance(error, LLMClientError) and "No deployments available" in str(error):
+        return POOL_COOLDOWN_BACKOFF_SECONDS
+    return min(0.5 * attempt, 2.0)
 
 
 def _generate_sharded(

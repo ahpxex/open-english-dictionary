@@ -82,6 +82,7 @@ class LiteLLMClient:
             ],
             num_retries=transient_retries,
             cooldown_time=cooldown_seconds,
+            allowed_fails=3,
             enable_pre_call_checks=any(
                 provider.rpm is not None for provider in settings.providers
             ),

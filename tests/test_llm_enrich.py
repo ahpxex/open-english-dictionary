@@ -1385,3 +1385,12 @@ def test_audit_response_payload_accepts_clean_payload() -> None:
     from open_dictionary.qa.audit import audit_response_payload
 
     assert audit_response_payload(valid_payload("noun")) == []
+
+
+def test_retry_delay_backs_off_for_pool_cooldown_errors() -> None:
+    # Regression: with a 30s router cooldown, sub-second retry sleeps burned
+    # the whole retry budget inside one cooldown window (789 failures in 15
+    # minutes during the first full run).
+    assert llm_stage._retry_delay(LLMClientError("No deployments available for selected model"), 1) == llm_stage.POOL_COOLDOWN_BACKOFF_SECONDS
+    assert llm_stage._retry_delay(ValueError("bad json"), 1) == 0.5
+    assert llm_stage._retry_delay(LLMClientError("timeout"), 2) == 1.0
