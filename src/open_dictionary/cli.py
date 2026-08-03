@@ -27,6 +27,7 @@ from .stages.curated_build import (
     DEFAULT_CURATED_TABLE,
     run_curated_build_stage,
 )
+from .stages.curated_build.word_selection import build_word_selection_rule
 from .stages.export_distribution_jsonl import (
     DISTRIBUTION_SCHEMA_VERSION,
     EXPORT_DISTRIBUTION_JSONL_STAGE,
@@ -67,6 +68,32 @@ def _add_definition_language_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--definition-language-name",
         help=f"Human-readable name for the definition language (default: {DEFAULT_DEFINITION_LANGUAGE.name}).",
+    )
+
+
+def _add_word_selection_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--top-words",
+        type=int,
+        help=(
+            "Select only headwords whose wordfreq Zipf frequency reaches the "
+            "top-N token threshold (word_selection_v1). Applies to groups in "
+            "the selection language; other languages pass through unfiltered."
+        ),
+    )
+    parser.add_argument(
+        "--top-words-lang",
+        default="en",
+        help="wordfreq language for the top-words selection rule (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--phrase-min-zipf",
+        type=float,
+        help=(
+            "Stricter Zipf boundary for multiword headwords, compensating for "
+            "wordfreq's optimistic combined-token phrase estimates. Omit to "
+            "hold phrases to the same boundary as single words."
+        ),
     )
 
 
@@ -143,7 +170,7 @@ def _count_pending_llm_entries(
     source_table: str,
     target_table: str,
     prompt_bundle,
-    model: str,
+    models: list[str],
     recompute_existing: bool,
 ) -> int:
     return count_pending_entries(
@@ -151,7 +178,7 @@ def _count_pending_llm_entries(
         source_table=source_table,
         target_table=target_table,
         prompt_bundle=prompt_bundle,
-        model=model,
+        models=models,
         recompute_existing=recompute_existing,
     )
 
@@ -162,7 +189,7 @@ def _fetch_recent_failed_enrichments(
     target_table: str,
     prompt_version: str,
     definition_language_code: str,
-    model: str | None,
+    models: list[str] | None,
     limit: int,
 ) -> list[tuple[str, str]]:
     query = sql.SQL(
@@ -178,11 +205,11 @@ def _fetch_recent_failed_enrichments(
         """
     ).format(
         target_table=_identifier_from_dotted(target_table),
-        model_filter=sql.SQL("AND model = %s") if model is not None else sql.SQL(""),
+        model_filter=sql.SQL("AND model = ANY(%s)") if models else sql.SQL(""),
     )
     params: list[object] = [prompt_version, definition_language_code]
-    if model is not None:
-        params.append(model)
+    if models:
+        params.append(list(models))
     params.append(limit)
     with get_connection(settings) as conn:
         with conn.cursor() as cursor:
@@ -225,9 +252,24 @@ def _cmd_db_init(args: argparse.Namespace) -> int:
     return 0
 
 
+def _get_word_selection(args: argparse.Namespace):
+    top_words = getattr(args, "top_words", None)
+    if top_words is None:
+        return None
+    try:
+        return build_word_selection_rule(
+            lang=args.top_words_lang,
+            top_n=top_words,
+            phrase_min_zipf=getattr(args, "phrase_min_zipf", None),
+        )
+    except ValueError as exc:
+        args._parser.error(str(exc))
+
+
 def _cmd_curated_build(args: argparse.Namespace) -> int:
     settings = _get_settings(args)
     progress_callback = _make_progress_callback()
+    word_selection = _get_word_selection(args)
 
     try:
         result = run_curated_build_stage(
@@ -239,6 +281,7 @@ def _cmd_curated_build(args: argparse.Namespace) -> int:
             lang_codes=args.lang_codes,
             limit_groups=args.limit_groups,
             replace_existing=args.replace_existing,
+            word_selection=word_selection,
             progress_callback=progress_callback,
         )
     except (psycopg.Error, ValueError) as exc:
@@ -249,9 +292,13 @@ def _cmd_curated_build(args: argparse.Namespace) -> int:
         stage=CURATED_BUILD_STAGE,
         run_id=str(result.run_id),
         groups_processed=result.groups_processed,
+        groups_filtered_out=result.groups_filtered_out,
         entries_written=result.entries_written,
         relations_written=result.relations_written,
         triage_written=result.triage_written,
+        word_selection=(
+            word_selection.as_metadata() if word_selection is not None else None
+        ),
     )
     return 0
 
@@ -318,7 +365,7 @@ def _cmd_export_audit_jsonl(args: argparse.Namespace) -> int:
             curated_table=args.curated_table,
             llm_table=args.llm_table,
             artifact_table=args.artifact_table,
-            model=args.model,
+            models=args.model,
             prompt_version=args.prompt_version,
             definition_language=definition_language,
             include_unenriched=args.include_unenriched,
@@ -357,7 +404,7 @@ def _cmd_export_distribution_jsonl(args: argparse.Namespace) -> int:
             curated_table=args.curated_table,
             llm_table=args.llm_table,
             artifact_table=args.artifact_table,
-            model=args.model,
+            models=args.model,
             prompt_version=args.prompt_version,
             definition_language=definition_language,
             progress_callback=progress_callback,
@@ -386,6 +433,7 @@ def _cmd_pipeline_run(args: argparse.Namespace) -> int:
     worker_tiers = args.worker_tiers or [args.max_workers]
     progress_callback = _make_progress_callback()
     definition_language = _get_definition_language(args)
+    word_selection = _get_word_selection(args)
     prompt_bundle = build_prompt_bundle(
         prompt_version=args.prompt_version,
         definition_language=definition_language,
@@ -400,7 +448,7 @@ def _cmd_pipeline_run(args: argparse.Namespace) -> int:
     audit_result = None
 
     try:
-        export_model = args.model or load_llm_settings(env_file=model_env_file).model
+        export_models = args.model or list(load_llm_settings(env_file=model_env_file).models)
         if not args.skip_init_db:
             with get_connection(settings) as conn:
                 apply_foundation(conn)
@@ -427,6 +475,9 @@ def _cmd_pipeline_run(args: argparse.Namespace) -> int:
                     "lang_codes": args.lang_codes or [],
                     "limit_groups": args.limit_groups,
                     "limit_entries": args.limit_entries,
+                    "word_selection": (
+                        word_selection.as_metadata() if word_selection is not None else None
+                    ),
                     "worker_tiers": worker_tiers,
                     "max_retries": args.max_retries,
                     "recompute_existing": args.recompute_existing,
@@ -469,6 +520,7 @@ def _cmd_pipeline_run(args: argparse.Namespace) -> int:
             lang_codes=args.lang_codes,
             limit_groups=args.limit_groups,
             replace_existing=args.replace_existing_curated,
+            word_selection=word_selection,
             parent_run_id=workflow_run_id,
             progress_callback=progress_callback,
         )
@@ -509,7 +561,7 @@ def _cmd_pipeline_run(args: argparse.Namespace) -> int:
                 source_table=args.curated_table,
                 target_table=args.llm_table,
                 prompt_bundle=prompt_bundle,
-                model=export_model,
+                models=export_models,
                 recompute_existing=args.recompute_existing,
             )
             for workers in worker_tiers:
@@ -543,7 +595,7 @@ def _cmd_pipeline_run(args: argparse.Namespace) -> int:
                     source_table=args.curated_table,
                     target_table=args.llm_table,
                     prompt_bundle=prompt_bundle,
-                    model=export_model,
+                    models=export_models,
                     recompute_existing=args.recompute_existing,
                 )
                 llm_attempts.append(
@@ -569,7 +621,7 @@ def _cmd_pipeline_run(args: argparse.Namespace) -> int:
                     target_table=args.llm_table,
                     prompt_version=prompt_bundle.resolved_prompt_version,
                     definition_language_code=definition_language.code,
-                    model=export_model,
+                    models=export_models,
                     limit=10,
                 )
                 raise RuntimeError(
@@ -586,7 +638,7 @@ def _cmd_pipeline_run(args: argparse.Namespace) -> int:
                 curated_table=args.curated_table,
                 llm_table=args.llm_table,
                 artifact_table=args.artifact_table,
-                model=export_model,
+                models=export_models,
                 prompt_version=args.prompt_version,
                 definition_language=definition_language,
                 parent_run_id=workflow_run_id,
@@ -609,7 +661,7 @@ def _cmd_pipeline_run(args: argparse.Namespace) -> int:
                 curated_table=args.curated_table,
                 llm_table=args.llm_table,
                 artifact_table=args.artifact_table,
-                model=export_model,
+                models=export_models,
                 prompt_version=args.prompt_version,
                 definition_language=definition_language,
                 parent_run_id=workflow_run_id,
@@ -623,7 +675,7 @@ def _cmd_pipeline_run(args: argparse.Namespace) -> int:
                 curated_table=args.curated_table,
                 llm_table=args.llm_table,
                 artifact_table=args.artifact_table,
-                model=export_model,
+                models=export_models,
                 prompt_version=args.prompt_version,
                 definition_language=definition_language,
                 include_unenriched=args.include_unenriched_audit,
@@ -691,8 +743,12 @@ def _cmd_pipeline_run(args: argparse.Namespace) -> int:
         "entries": {
             "run_id": str(curated_result.run_id),
             "entries_written": curated_result.entries_written,
+            "groups_filtered_out": curated_result.groups_filtered_out,
             "relations_written": curated_result.relations_written,
             "triage_written": curated_result.triage_written,
+            "word_selection": (
+                word_selection.as_metadata() if word_selection is not None else None
+            ),
         },
         "definitions": {
             "run_id": str(llm_result.run_id),
@@ -775,7 +831,7 @@ def _cmd_export_distribution_sqlite(args: argparse.Namespace) -> int:
             curated_table=args.curated_table,
             llm_table=args.llm_table,
             artifact_table=args.artifact_table,
-            model=args.model,
+            models=args.model,
             prompt_version=args.prompt_version,
             definition_language=definition_language,
             progress_callback=progress_callback,
@@ -931,6 +987,7 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Clear curated output tables before rebuilding them.",
     )
+    _add_word_selection_options(curated_build_parser)
     _add_database_options(curated_build_parser)
     curated_build_parser.set_defaults(func=_cmd_curated_build, _parser=curated_build_parser)
 
@@ -1013,7 +1070,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     export_audit_jsonl_parser.add_argument(
         "--model",
-        help="Optional model filter when choosing the latest successful definition run.",
+        action="append",
+        help=(
+            "Optional model filter when choosing the latest successful definition run. "
+            "Repeat to accept definitions from several models."
+        ),
     )
     export_audit_jsonl_parser.add_argument(
         "--prompt-version",
@@ -1059,7 +1120,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     export_distribution_jsonl_parser.add_argument(
         "--model",
-        help="Optional model filter when choosing the latest successful definition run.",
+        action="append",
+        help=(
+            "Optional model filter when choosing the latest successful definition run. "
+            "Repeat to accept definitions from several models."
+        ),
     )
     export_distribution_jsonl_parser.add_argument(
         "--prompt-version",
@@ -1101,7 +1166,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     export_distribution_sqlite_parser.add_argument(
         "--model",
-        help="Optional model filter when choosing the latest successful definition run.",
+        action="append",
+        help=(
+            "Optional model filter when choosing the latest successful definition run. "
+            "Repeat to accept definitions from several models."
+        ),
     )
     export_distribution_sqlite_parser.add_argument(
         "--prompt-version",
@@ -1324,7 +1393,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     pipeline_run_parser.add_argument(
         "--model",
-        help="Optional model filter for the export stages.",
+        action="append",
+        help=(
+            "Optional model filter for the export stages. Repeat to accept "
+            "definitions from several models. Defaults to every model in the "
+            "configured provider pool."
+        ),
     )
     pipeline_run_parser.add_argument(
         "--skip-distribution-export",
@@ -1357,6 +1431,7 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="When writing the optional audit artifact, include entries without successful definition rows.",
     )
+    _add_word_selection_options(pipeline_run_parser)
     _add_definition_language_options(pipeline_run_parser)
     _add_database_options(pipeline_run_parser)
     pipeline_run_parser.set_defaults(func=_cmd_run, _parser=pipeline_run_parser)

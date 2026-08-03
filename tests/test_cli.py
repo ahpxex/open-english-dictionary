@@ -67,6 +67,7 @@ from open_dictionary.llm.prompt import PROMPT_VERSION, build_prompt_bundle
                 "run_curated_build_stage": lambda **kwargs: SimpleNamespace(
                     run_id=uuid4(),
                     groups_processed=742,
+                    groups_filtered_out=0,
                     entries_written=742,
                     relations_written=10,
                     triage_written=1,
@@ -201,6 +202,7 @@ def test_pipeline_run_executes_stages_and_prints_summary(
         return SimpleNamespace(
             run_id=uuid4(),
             groups_processed=742,
+            groups_filtered_out=0,
             entries_written=742,
             relations_written=10,
             triage_written=1,
@@ -252,7 +254,7 @@ def test_pipeline_run_executes_stages_and_prints_summary(
     monkeypatch.setattr(
         cli,
         "load_llm_settings",
-        lambda **kwargs: SimpleNamespace(model="test-model"),
+        lambda **kwargs: SimpleNamespace(models=("test-model",)),
     )
     monkeypatch.setattr(cli, "get_connection", lambda settings: DummyConnection())
     monkeypatch.setattr(cli, "start_run", lambda conn, **kwargs: workflow_run_id)
@@ -339,7 +341,7 @@ def test_pipeline_run_stops_when_llm_has_failures(
     monkeypatch.setattr(
         cli,
         "load_llm_settings",
-        lambda **kwargs: SimpleNamespace(model="test-model"),
+        lambda **kwargs: SimpleNamespace(models=("test-model",)),
     )
     monkeypatch.setattr(cli, "get_connection", lambda settings: DummyConnection())
     monkeypatch.setattr(cli, "start_run", lambda conn, **kwargs: uuid4())
@@ -364,6 +366,7 @@ def test_pipeline_run_stops_when_llm_has_failures(
         lambda **kwargs: SimpleNamespace(
             run_id=uuid4(),
             groups_processed=742,
+            groups_filtered_out=0,
             entries_written=742,
             relations_written=10,
             triage_written=1,
@@ -416,7 +419,7 @@ def test_pipeline_run_retries_with_worker_tiers_until_pending_is_zero(
     monkeypatch.setattr(
         cli,
         "load_llm_settings",
-        lambda **kwargs: SimpleNamespace(model="test-model"),
+        lambda **kwargs: SimpleNamespace(models=("test-model",)),
     )
     monkeypatch.setattr(cli, "get_connection", lambda settings: DummyConnection())
     monkeypatch.setattr(cli, "start_run", lambda conn, **kwargs: workflow_run_id)
@@ -441,6 +444,7 @@ def test_pipeline_run_retries_with_worker_tiers_until_pending_is_zero(
         lambda **kwargs: SimpleNamespace(
             run_id=uuid4(),
             groups_processed=742,
+            groups_filtered_out=0,
             entries_written=742,
             relations_written=10,
             triage_written=1,
@@ -517,7 +521,7 @@ def test_validate_distribution_jsonl_command_reads_file(
     output_path.write_text(
         json.dumps(
             {
-                "schema_version": "distribution_entry_v1",
+                "schema_version": "distribution_entry_v4",
                 "entry_id": "entry-1",
                 "headword": "barra",
                 "normalized_headword": "barra",
@@ -525,28 +529,28 @@ def test_validate_distribution_jsonl_command_reads_file(
                 "definition_language": {"code": "en", "name": "English"},
                 "entry_type": "standard",
                 "headword_summary": "Overall summary.",
+                "memory_hook": "一句帮助记忆的主线。",
                 "study_notes": [],
                 "etymology_note": None,
                 "etymologies": [{"etymology_id": "et1", "text": None, "pos_members": ["noun"]}],
                 "pos_groups": [
                     {
-                        "pos_group_id": "noun|et1",
                         "pos": "noun",
                         "etymology_id": "et1",
                         "summary": "Noun summary.",
-                        "usage_notes": None,
+                        "usage_note": None,
                         "forms": [],
-                        "pronunciations": [{"ipa": "/x/", "text": None, "audio_url": None, "tags": []}],
+                        "pronunciations": [{"ipa": "/x/", "text": None, "tags": []}],
                         "meanings": [
                             {
-                                "meaning_id": "s1",
+                                "sense_id": "s1",
+                                "priority": "core",
                                 "short_gloss": "woman",
                                 "learner_explanation": "Detailed explanation.",
                                 "usage_note": None,
                                 "labels": [],
                                 "topics": [],
                                 "examples": [],
-                                "relations": [],
                             }
                         ],
                         "relations": [],
