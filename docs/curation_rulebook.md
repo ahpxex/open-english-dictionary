@@ -84,11 +84,15 @@ These may be useful, but should be explicitly marked as special:
 - `proverb`
 - `suffix`
 - `prefix`
+- `name` (user-approved 2026-08-04; previously triaged by default, which
+  dropped primary senses of selected headwords such as DNS = Domain Name
+  System)
 
 Suggested flags:
 
 - `entry_type: proverb`
 - `entry_type: affix`
+- `entry_type: proper_name`
 
 These records should not be silently mixed into ordinary lexical entries.
 
@@ -110,16 +114,8 @@ Suggested handling:
 
 ### Triage with flag in V1
 
-These should not be part of the default main export, but they are not
-automatically discarded:
-
-- `name`
-
-Suggested handling:
-
-- preserve them through triage or separate buckets
-- attach `entry_type: proper_name`
-- only promote them into main export through later rule tightening
+No pos values remain in this class. `name` lived here until 2026-08-04,
+when it moved to keep-with-flag (see above).
 
 ### Drop by default in V1
 
