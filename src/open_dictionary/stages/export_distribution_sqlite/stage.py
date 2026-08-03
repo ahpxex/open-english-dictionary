@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -46,7 +47,7 @@ def run_export_distribution_sqlite_stage(
     curated_table: str = "curated.entries",
     llm_table: str = "llm.entry_enrichments",
     artifact_table: str = "export.artifacts",
-    model: str | None = None,
+    models: Sequence[str] | None = None,
     prompt_version: str = PROMPT_VERSION,
     definition_language: LanguageSpec | dict[str, Any] = DEFAULT_DEFINITION_LANGUAGE,
     parent_run_id: UUID | None = None,
@@ -67,7 +68,7 @@ def run_export_distribution_sqlite_stage(
                 "curated_table": curated_table,
                 "definitions_table": llm_table,
                 "artifact_table": artifact_table,
-                "model": model,
+                "models": list(models) if models else None,
                 "prompt_template_version": prompt_bundle.template_version,
                 "prompt_version": prompt_bundle.resolved_prompt_version,
                 "schema_version": DISTRIBUTION_SCHEMA_VERSION,
@@ -83,7 +84,7 @@ def run_export_distribution_sqlite_stage(
             progress_callback,
             stage=EXPORT_DISTRIBUTION_SQLITE_STAGE,
             event="export_start",
-            model=model,
+            models=list(models) if models else None,
             prompt_version=prompt_bundle.resolved_prompt_version,
             prompt_template_version=prompt_bundle.template_version,
             definition_language_code=language.code,
@@ -94,7 +95,7 @@ def run_export_distribution_sqlite_stage(
                 settings=settings,
                 curated_table=curated_table,
                 llm_table=llm_table,
-                model=model,
+                models=models,
                 prompt_bundle=prompt_bundle,
                 progress_callback=None,
             ),
@@ -103,7 +104,7 @@ def run_export_distribution_sqlite_stage(
                 "distribution_schema_version": DISTRIBUTION_SCHEMA_VERSION,
                 "sqlite_schema_version": SQLITE_SCHEMA_VERSION,
                 "definition_language": language.as_dict(),
-                "model": model,
+                "models": list(models) if models else None,
                 "prompt_template_version": prompt_bundle.template_version,
                 "prompt_version": prompt_bundle.resolved_prompt_version,
             },
@@ -139,7 +140,7 @@ def run_export_distribution_sqlite_stage(
                 metadata={
                     "curated_table": curated_table,
                     "definitions_table": llm_table,
-                    "model": model,
+                    "models": list(models) if models else None,
                     "prompt_template_version": prompt_bundle.template_version,
                     "prompt_version": prompt_bundle.resolved_prompt_version,
                     "schema_version": DISTRIBUTION_SCHEMA_VERSION,
@@ -287,6 +288,7 @@ def _initialize_distribution_sqlite(connection: sqlite3.Connection) -> None:
             definition_language_name TEXT NOT NULL,
             entry_type TEXT NOT NULL,
             headword_summary TEXT NOT NULL,
+            memory_hook TEXT NOT NULL,
             etymology_note TEXT,
             study_notes_json TEXT NOT NULL,
             document_json TEXT NOT NULL
@@ -314,91 +316,76 @@ def _initialize_distribution_sqlite(connection: sqlite3.Connection) -> None:
 
         CREATE TABLE pos_groups (
             entry_id TEXT NOT NULL,
-            pos_group_id TEXT NOT NULL,
             pos_group_index INTEGER NOT NULL,
             pos TEXT NOT NULL,
             etymology_id TEXT,
             summary TEXT NOT NULL,
-            usage_notes TEXT,
-            PRIMARY KEY (entry_id, pos_group_id),
+            usage_note TEXT,
+            PRIMARY KEY (entry_id, pos_group_index),
             FOREIGN KEY (entry_id) REFERENCES entries(entry_id) ON DELETE CASCADE
         );
-        CREATE INDEX pos_groups_entry_idx ON pos_groups (entry_id, pos_group_index);
 
         CREATE TABLE pos_group_forms (
             entry_id TEXT NOT NULL,
-            pos_group_id TEXT NOT NULL,
+            pos_group_index INTEGER NOT NULL,
             form_index INTEGER NOT NULL,
             text TEXT NOT NULL,
             tags_json TEXT NOT NULL,
             roman TEXT,
-            PRIMARY KEY (entry_id, pos_group_id, form_index),
-            FOREIGN KEY (entry_id, pos_group_id) REFERENCES pos_groups(entry_id, pos_group_id) ON DELETE CASCADE
+            PRIMARY KEY (entry_id, pos_group_index, form_index),
+            FOREIGN KEY (entry_id, pos_group_index) REFERENCES pos_groups(entry_id, pos_group_index) ON DELETE CASCADE
         );
 
         CREATE TABLE pos_group_pronunciations (
             entry_id TEXT NOT NULL,
-            pos_group_id TEXT NOT NULL,
+            pos_group_index INTEGER NOT NULL,
             pronunciation_index INTEGER NOT NULL,
             ipa TEXT,
             text TEXT,
-            audio_url TEXT,
             tags_json TEXT NOT NULL,
-            PRIMARY KEY (entry_id, pos_group_id, pronunciation_index),
-            FOREIGN KEY (entry_id, pos_group_id) REFERENCES pos_groups(entry_id, pos_group_id) ON DELETE CASCADE
+            PRIMARY KEY (entry_id, pos_group_index, pronunciation_index),
+            FOREIGN KEY (entry_id, pos_group_index) REFERENCES pos_groups(entry_id, pos_group_index) ON DELETE CASCADE
         );
 
         CREATE TABLE pos_group_relations (
             entry_id TEXT NOT NULL,
-            pos_group_id TEXT NOT NULL,
+            pos_group_index INTEGER NOT NULL,
             relation_index INTEGER NOT NULL,
             type TEXT NOT NULL,
             word TEXT NOT NULL,
             lang_code TEXT,
-            PRIMARY KEY (entry_id, pos_group_id, relation_index),
-            FOREIGN KEY (entry_id, pos_group_id) REFERENCES pos_groups(entry_id, pos_group_id) ON DELETE CASCADE
+            PRIMARY KEY (entry_id, pos_group_index, relation_index),
+            FOREIGN KEY (entry_id, pos_group_index) REFERENCES pos_groups(entry_id, pos_group_index) ON DELETE CASCADE
         );
 
         CREATE TABLE meanings (
             entry_id TEXT NOT NULL,
-            pos_group_id TEXT NOT NULL,
-            meaning_id TEXT NOT NULL,
+            pos_group_index INTEGER NOT NULL,
+            sense_id TEXT NOT NULL,
             meaning_index INTEGER NOT NULL,
+            priority TEXT NOT NULL CHECK (priority IN ('core', 'common', 'rare')),
             short_gloss TEXT,
             learner_explanation TEXT NOT NULL,
             usage_note TEXT,
             labels_json TEXT NOT NULL,
             topics_json TEXT NOT NULL,
-            PRIMARY KEY (entry_id, pos_group_id, meaning_id),
-            FOREIGN KEY (entry_id, pos_group_id) REFERENCES pos_groups(entry_id, pos_group_id) ON DELETE CASCADE
+            PRIMARY KEY (entry_id, pos_group_index, sense_id),
+            FOREIGN KEY (entry_id, pos_group_index) REFERENCES pos_groups(entry_id, pos_group_index) ON DELETE CASCADE
         );
-        CREATE INDEX meanings_lookup_idx ON meanings (entry_id, pos_group_id, meaning_index);
+        CREATE INDEX meanings_lookup_idx ON meanings (entry_id, pos_group_index, meaning_index);
+        CREATE INDEX meanings_priority_idx ON meanings (entry_id, priority);
 
         CREATE TABLE meaning_examples (
             entry_id TEXT NOT NULL,
-            pos_group_id TEXT NOT NULL,
-            meaning_id TEXT NOT NULL,
+            pos_group_index INTEGER NOT NULL,
+            sense_id TEXT NOT NULL,
             example_index INTEGER NOT NULL,
-            source_text TEXT NOT NULL,
-            translation TEXT,
-            note TEXT,
-            ref TEXT,
-            type TEXT,
-            PRIMARY KEY (entry_id, pos_group_id, meaning_id, example_index),
-            FOREIGN KEY (entry_id, pos_group_id, meaning_id) REFERENCES meanings(entry_id, pos_group_id, meaning_id) ON DELETE CASCADE
+            text TEXT NOT NULL,
+            translation TEXT NOT NULL,
+            PRIMARY KEY (entry_id, pos_group_index, sense_id, example_index),
+            FOREIGN KEY (entry_id, pos_group_index, sense_id) REFERENCES meanings(entry_id, pos_group_index, sense_id) ON DELETE CASCADE
         );
 
-        CREATE TABLE meaning_relations (
-            entry_id TEXT NOT NULL,
-            pos_group_id TEXT NOT NULL,
-            meaning_id TEXT NOT NULL,
-            relation_index INTEGER NOT NULL,
-            type TEXT NOT NULL,
-            word TEXT NOT NULL,
-            lang_code TEXT,
-            PRIMARY KEY (entry_id, pos_group_id, meaning_id, relation_index),
-            FOREIGN KEY (entry_id, pos_group_id, meaning_id) REFERENCES meanings(entry_id, pos_group_id, meaning_id) ON DELETE CASCADE
-        );
         """
     )
     connection.execute("PRAGMA user_version = 1")
@@ -421,10 +408,11 @@ def _insert_distribution_document(connection: sqlite3.Connection, document: dict
             definition_language_name,
             entry_type,
             headword_summary,
+            memory_hook,
             etymology_note,
             study_notes_json,
             document_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             entry_id,
@@ -437,6 +425,7 @@ def _insert_distribution_document(connection: sqlite3.Connection, document: dict
             document["definition_language"]["name"],
             document["entry_type"],
             document["headword_summary"],
+            document["memory_hook"],
             document["etymology_note"],
             _json(document["study_notes"]),
             document_json,
@@ -477,27 +466,24 @@ def _insert_distribution_document(connection: sqlite3.Connection, document: dict
     )
 
     for pos_group_index, pos_group in enumerate(document["pos_groups"], start=1):
-        pos_group_id = pos_group["pos_group_id"]
         connection.execute(
             """
             INSERT INTO pos_groups (
                 entry_id,
-                pos_group_id,
                 pos_group_index,
                 pos,
                 etymology_id,
                 summary,
-                usage_notes
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                usage_note
+            ) VALUES (?, ?, ?, ?, ?, ?)
             """,
             (
                 entry_id,
-                pos_group_id,
                 pos_group_index,
                 pos_group["pos"],
                 pos_group.get("etymology_id"),
                 pos_group["summary"],
-                pos_group.get("usage_notes"),
+                pos_group.get("usage_note"),
             ),
         )
 
@@ -505,7 +491,7 @@ def _insert_distribution_document(connection: sqlite3.Connection, document: dict
             """
             INSERT INTO pos_group_forms (
                 entry_id,
-                pos_group_id,
+                pos_group_index,
                 form_index,
                 text,
                 tags_json,
@@ -515,7 +501,7 @@ def _insert_distribution_document(connection: sqlite3.Connection, document: dict
             [
                 (
                     entry_id,
-                    pos_group_id,
+                    pos_group_index,
                     form_index,
                     form["text"],
                     _json(form.get("tags") or []),
@@ -529,22 +515,20 @@ def _insert_distribution_document(connection: sqlite3.Connection, document: dict
             """
             INSERT INTO pos_group_pronunciations (
                 entry_id,
-                pos_group_id,
+                pos_group_index,
                 pronunciation_index,
                 ipa,
                 text,
-                audio_url,
                 tags_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?)
             """,
             [
                 (
                     entry_id,
-                    pos_group_id,
+                    pos_group_index,
                     pronunciation_index,
                     pronunciation.get("ipa"),
                     pronunciation.get("text"),
-                    pronunciation.get("audio_url"),
                     _json(pronunciation.get("tags") or []),
                 )
                 for pronunciation_index, pronunciation in enumerate(pos_group["pronunciations"], start=1)
@@ -555,7 +539,7 @@ def _insert_distribution_document(connection: sqlite3.Connection, document: dict
             """
             INSERT INTO pos_group_relations (
                 entry_id,
-                pos_group_id,
+                pos_group_index,
                 relation_index,
                 type,
                 word,
@@ -565,7 +549,7 @@ def _insert_distribution_document(connection: sqlite3.Connection, document: dict
             [
                 (
                     entry_id,
-                    pos_group_id,
+                    pos_group_index,
                     relation_index,
                     relation["type"],
                     relation["word"],
@@ -576,26 +560,28 @@ def _insert_distribution_document(connection: sqlite3.Connection, document: dict
         )
 
         for meaning_index, meaning in enumerate(pos_group["meanings"], start=1):
-            meaning_id = meaning["meaning_id"]
+            sense_id = meaning["sense_id"]
             connection.execute(
                 """
                 INSERT INTO meanings (
                     entry_id,
-                    pos_group_id,
-                    meaning_id,
+                    pos_group_index,
+                    sense_id,
                     meaning_index,
+                    priority,
                     short_gloss,
                     learner_explanation,
                     usage_note,
                     labels_json,
                     topics_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     entry_id,
-                    pos_group_id,
-                    meaning_id,
+                    pos_group_index,
+                    sense_id,
                     meaning_index,
+                    meaning["priority"],
                     meaning.get("short_gloss"),
                     meaning["learner_explanation"],
                     meaning.get("usage_note"),
@@ -608,57 +594,26 @@ def _insert_distribution_document(connection: sqlite3.Connection, document: dict
                 """
                 INSERT INTO meaning_examples (
                     entry_id,
-                    pos_group_id,
-                    meaning_id,
+                    pos_group_index,
+                    sense_id,
                     example_index,
-                    source_text,
-                    translation,
-                    note,
-                    ref,
-                    type
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    text,
+                    translation
+                ) VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 [
                     (
                         entry_id,
-                        pos_group_id,
-                        meaning_id,
+                        pos_group_index,
+                        sense_id,
                         example_index,
-                        example["source_text"],
-                        example.get("translation"),
-                        example.get("note"),
-                        example.get("ref"),
-                        example.get("type"),
+                        example["text"],
+                        example["translation"],
                     )
                     for example_index, example in enumerate(meaning["examples"], start=1)
                 ],
             )
 
-            connection.executemany(
-                """
-                INSERT INTO meaning_relations (
-                    entry_id,
-                    pos_group_id,
-                    meaning_id,
-                    relation_index,
-                    type,
-                    word,
-                    lang_code
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                [
-                    (
-                        entry_id,
-                        pos_group_id,
-                        meaning_id,
-                        relation_index,
-                        relation["type"],
-                        relation["word"],
-                        relation.get("lang_code"),
-                    )
-                    for relation_index, relation in enumerate(meaning["relations"], start=1)
-                ],
-            )
 
 
 def _insert_metadata(connection: sqlite3.Connection, *, metadata: dict[str, Any]) -> None:

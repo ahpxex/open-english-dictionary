@@ -261,6 +261,7 @@ def test_build_distribution_document_merges_curated_and_llm_fields() -> None:
     }
     llm_payload = {
         "headword_summary": "这是一个面向中文学习者的整体说明。",
+        "memory_hook": "一句帮助记忆的主线。",
         "study_notes": ["不要机械翻译成“复杂的”。"],
         "etymology_note": "带有成熟、精细的语感。",
         "pos_groups": [
@@ -268,13 +269,17 @@ def test_build_distribution_document_merges_curated_and_llm_fields() -> None:
                 "pos_group_id": build_pos_group_id(pos="adj", etymology_id="et1"),
                 "pos": "adj",
                 "summary": "形容词整体说明。",
-                "usage_notes": "要结合搭配理解。",
+                "usage_note": "要结合搭配理解。",
                 "meanings": [
                     {
                         "sense_id": "s1",
+                        "priority": "core",
                         "short_gloss": "复杂精密的；老练的",
                         "learner_explanation": "这里是详细的中文自然语言解释。",
                         "usage_note": "这是该义项的用法说明。",
+                        "examples": [
+                            {"text": "She has sophisticated taste in music.", "translation": "她的音乐品味很老练。"}
+                        ],
                     }
                 ],
             }
@@ -287,12 +292,19 @@ def test_build_distribution_document_merges_curated_and_llm_fields() -> None:
         definition_language=DEFAULT_DEFINITION_LANGUAGE,
     )
 
-    assert document["schema_version"] == "distribution_entry_v1"
+    assert document["schema_version"] == "distribution_entry_v4"
     assert document["headword"] == "sophisticated"
     assert document["definition_language"]["code"] == "zh-Hans"
     assert "entries" not in document
     assert "definitions" not in document
     assert document["pos_groups"][0]["meanings"][0]["learner_explanation"] == "这里是详细的中文自然语言解释。"
+    meaning = document["pos_groups"][0]["meanings"][0]
+    assert meaning["examples"] == [
+        {"text": "She has sophisticated taste in music.", "translation": "她的音乐品味很老练。"}
+    ]
+    assert "citations" not in meaning
+    assert "relations" not in meaning
+    assert "pos_group_id" not in document["pos_groups"][0]
     assert validate_distribution_document(document) == document
 
 
@@ -329,6 +341,7 @@ def test_build_distribution_document_distinguishes_same_pos_across_etymologies()
     }
     llm_payload = {
         "headword_summary": "bank 有两个常见来源。",
+        "memory_hook": "一句帮助记忆的主线。",
         "study_notes": [],
         "etymology_note": None,
         "pos_groups": [
@@ -336,18 +349,18 @@ def test_build_distribution_document_distinguishes_same_pos_across_etymologies()
                 "pos_group_id": build_pos_group_id(pos="noun", etymology_id="et1"),
                 "pos": "noun",
                 "summary": "河岸义项说明。",
-                "usage_notes": None,
+                "usage_note": None,
                 "meanings": [
-                    {"sense_id": "s1", "short_gloss": "河岸", "learner_explanation": "与河流边缘有关。", "usage_note": None}
+                    {"sense_id": "s1", "priority": "core", "short_gloss": "河岸", "learner_explanation": "与河流边缘有关。", "usage_note": None}
                 ],
             },
             {
                 "pos_group_id": build_pos_group_id(pos="noun", etymology_id="et2"),
                 "pos": "noun",
                 "summary": "金融机构义项说明。",
-                "usage_notes": None,
+                "usage_note": None,
                 "meanings": [
-                    {"sense_id": "s1", "short_gloss": "银行", "learner_explanation": "与金融机构有关。", "usage_note": None}
+                    {"sense_id": "s1", "priority": "core", "short_gloss": "银行", "learner_explanation": "与金融机构有关。", "usage_note": None}
                 ],
             },
         ],
@@ -378,6 +391,7 @@ def test_run_export_distribution_jsonl_stage_writes_output_and_manifest(
             entry_id=entry_id,
             payload={
                 "headword_summary": "整体说明。",
+                "memory_hook": "一句帮助记忆的主线。",
                 "study_notes": ["学习提示。"],
                 "etymology_note": None,
                 "pos_groups": [
@@ -385,10 +399,11 @@ def test_run_export_distribution_jsonl_stage_writes_output_and_manifest(
                         "pos_group_id": build_pos_group_id(pos="adj", etymology_id="et1"),
                         "pos": "adj",
                         "summary": "形容词整体说明。",
-                        "usage_notes": None,
+                        "usage_note": None,
                         "meanings": [
                             {
                                 "sense_id": "s1",
+                                "priority": "core",
                                 "short_gloss": "复杂精密的",
                                 "learner_explanation": "详细解释。",
                                 "usage_note": None,
@@ -416,10 +431,10 @@ def test_run_export_distribution_jsonl_stage_writes_output_and_manifest(
     rows = read_jsonl(output)
 
     assert result.entry_count == 1
-    assert rows[0]["schema_version"] == "distribution_entry_v1"
+    assert rows[0]["schema_version"] == "distribution_entry_v4"
     assert rows[0]["headword"] == "sophisticated"
     assert artifact_type == "distribution_jsonl"
-    assert schema_version == "distribution_entry_v1"
+    assert schema_version == "distribution_entry_v4"
     assert curated_run_ids
     assert definition_run_ids
 
@@ -439,6 +454,7 @@ def test_run_export_distribution_jsonl_stage_selects_requested_definition_langua
             definition_language=DEFAULT_DEFINITION_LANGUAGE.as_dict(),
             payload={
                 "headword_summary": "中文整体说明。",
+                "memory_hook": "一句帮助记忆的主线。",
                 "study_notes": [],
                 "etymology_note": None,
                 "pos_groups": [
@@ -446,10 +462,11 @@ def test_run_export_distribution_jsonl_stage_selects_requested_definition_langua
                         "pos_group_id": build_pos_group_id(pos="adj", etymology_id="et1"),
                         "pos": "adj",
                         "summary": "中文词性说明。",
-                        "usage_notes": None,
+                        "usage_note": None,
                         "meanings": [
                             {
                                 "sense_id": "s1",
+                                "priority": "core",
                                 "short_gloss": "复杂",
                                 "learner_explanation": "中文解释。",
                                 "usage_note": None,
@@ -465,6 +482,7 @@ def test_run_export_distribution_jsonl_stage_selects_requested_definition_langua
             definition_language=ENGLISH_DEFINITION_LANGUAGE,
             payload={
                 "headword_summary": "English overall summary.",
+                "memory_hook": "一句帮助记忆的主线。",
                 "study_notes": ["English study note."],
                 "etymology_note": None,
                 "pos_groups": [
@@ -472,10 +490,11 @@ def test_run_export_distribution_jsonl_stage_selects_requested_definition_langua
                         "pos_group_id": build_pos_group_id(pos="adj", etymology_id="et1"),
                         "pos": "adj",
                         "summary": "English adjective summary.",
-                        "usage_notes": None,
+                        "usage_note": None,
                         "meanings": [
                             {
                                 "sense_id": "s1",
+                                "priority": "core",
                                 "short_gloss": "refined",
                                 "learner_explanation": "Detailed English explanation.",
                                 "usage_note": None,
@@ -515,6 +534,7 @@ def test_distribution_export_rejects_stale_enrichment_payloads(
             input_hash="stale-hash",
             payload={
                 "headword_summary": "整体说明。",
+                "memory_hook": "一句帮助记忆的主线。",
                 "study_notes": ["学习提示。"],
                 "etymology_note": None,
                 "pos_groups": [
@@ -522,10 +542,11 @@ def test_distribution_export_rejects_stale_enrichment_payloads(
                         "pos_group_id": build_pos_group_id(pos="adj", etymology_id="et1"),
                         "pos": "adj",
                         "summary": "形容词整体说明。",
-                        "usage_notes": None,
+                        "usage_note": None,
                         "meanings": [
                             {
                                 "sense_id": "s1",
+                                "priority": "core",
                                 "short_gloss": "复杂精密的",
                                 "learner_explanation": "详细解释。",
                                 "usage_note": None,

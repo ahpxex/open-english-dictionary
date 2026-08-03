@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -25,7 +26,7 @@ def run_export_distribution_jsonl_stage(
     curated_table: str = "curated.entries",
     llm_table: str = "llm.entry_enrichments",
     artifact_table: str = "export.artifacts",
-    model: str | None = None,
+    models: Sequence[str] | None = None,
     prompt_version: str = PROMPT_VERSION,
     definition_language: LanguageSpec | dict[str, Any] = DEFAULT_DEFINITION_LANGUAGE,
     parent_run_id: UUID | None = None,
@@ -46,7 +47,7 @@ def run_export_distribution_jsonl_stage(
                 "curated_table": curated_table,
                 "definitions_table": llm_table,
                 "artifact_table": artifact_table,
-                "model": model,
+                "models": list(models) if models else None,
                 "prompt_template_version": prompt_bundle.template_version,
                 "prompt_version": prompt_bundle.resolved_prompt_version,
                 "schema_version": DISTRIBUTION_SCHEMA_VERSION,
@@ -61,7 +62,7 @@ def run_export_distribution_jsonl_stage(
             progress_callback,
             stage=EXPORT_DISTRIBUTION_JSONL_STAGE,
             event="export_start",
-            model=model,
+            models=list(models) if models else None,
             prompt_version=prompt_bundle.resolved_prompt_version,
             prompt_template_version=prompt_bundle.template_version,
             definition_language_code=language.code,
@@ -71,7 +72,7 @@ def run_export_distribution_jsonl_stage(
                 settings=settings,
                 curated_table=curated_table,
                 llm_table=llm_table,
-                model=model,
+                models=models,
                 prompt_bundle=prompt_bundle,
                 progress_callback=progress_callback,
             )
@@ -111,7 +112,7 @@ def run_export_distribution_jsonl_stage(
                 metadata={
                     "curated_table": curated_table,
                     "definitions_table": llm_table,
-                    "model": model,
+                    "models": list(models) if models else None,
                     "prompt_template_version": prompt_bundle.template_version,
                     "prompt_version": prompt_bundle.resolved_prompt_version,
                     "schema_version": DISTRIBUTION_SCHEMA_VERSION,
@@ -154,14 +155,14 @@ def iter_distribution_records(
     settings: RuntimeSettings,
     curated_table: str,
     llm_table: str,
-    model: str | None,
+    models: Sequence[str] | None,
     prompt_bundle,
     progress_callback: ProgressCallback | None = None,
 ):
     candidates = load_matching_enrichment_candidates(
         settings=settings,
         llm_table=llm_table,
-        model=model,
+        models=models,
         prompt_bundle=prompt_bundle,
     )
     reporter = ThrottledProgressReporter(progress_callback, stage=EXPORT_DISTRIBUTION_JSONL_STAGE)
@@ -270,6 +271,7 @@ def build_distribution_document(
         "definition_language": language.as_dict(),
         "entry_type": derive_entry_type(curated_payload.get("entry_flags") or []),
         "headword_summary": llm_payload["headword_summary"],
+        "memory_hook": llm_payload["memory_hook"],
         "study_notes": llm_payload["study_notes"],
         "etymology_note": llm_payload["etymology_note"],
         "etymologies": [
@@ -306,7 +308,8 @@ def build_distribution_pos_group(
             )
         meanings.append(
             {
-                "meaning_id": sense_id,
+                "sense_id": sense_id,
+                "priority": llm_meaning.get("priority"),
                 "short_gloss": llm_meaning.get("short_gloss"),
                 "learner_explanation": llm_meaning.get("learner_explanation"),
                 "usage_note": llm_meaning.get("usage_note"),
@@ -314,22 +317,10 @@ def build_distribution_pos_group(
                 "topics": curated_meaning.get("topics") or [],
                 "examples": [
                     {
-                        "source_text": example.get("text"),
+                        "text": example.get("text"),
                         "translation": example.get("translation"),
-                        "note": None,
-                        "ref": example.get("ref"),
-                        "type": example.get("type"),
                     }
-                    for example in curated_meaning.get("examples", [])
-                ],
-                "relations": [
-                    {
-                        "type": relation.get("relation_type"),
-                        "word": relation.get("target_word"),
-                        "lang_code": relation.get("target_lang_code"),
-                    }
-                    for relation in curated_meaning.get("relations", [])
-                    if relation.get("relation_type") in {"form_of", "alternative_of", "compound_of"}
+                    for example in llm_meaning.get("examples") or []
                 ],
             }
         )
@@ -338,28 +329,14 @@ def build_distribution_pos_group(
         return None
 
     return {
-        "pos_group_id": pos_group_id,
         "pos": curated_group.get("pos"),
         "etymology_id": curated_group.get("etymology_id"),
         "summary": llm_group.get("summary"),
-        "usage_notes": llm_group.get("usage_notes"),
-        "forms": [
-            {
-                "text": form.get("form"),
-                "tags": form.get("tags") or [],
-                "roman": form.get("roman"),
-            }
-            for form in curated_group.get("forms", [])
-        ],
-        "pronunciations": [
-            {
-                "ipa": pronunciation.get("ipa"),
-                "text": pronunciation.get("pronunciation_text"),
-                "audio_url": pronunciation.get("audio_url"),
-                "tags": pronunciation.get("tags") or [],
-            }
-            for pronunciation in curated_group.get("pronunciations", [])
-        ],
+        "usage_note": llm_group.get("usage_note"),
+        "forms": select_distribution_forms(curated_group.get("forms", [])),
+        "pronunciations": select_distribution_pronunciations(
+            curated_group.get("pronunciations", [])
+        ),
         "meanings": meanings,
         "relations": [
             {
@@ -380,3 +357,60 @@ def derive_entry_type(entry_flags: list[str]) -> str:
     if "entry_type:affix" in flag_set:
         return "affix"
     return "standard"
+
+
+# Distribution packaging rules (user-approved 2026-08-03): the learner artifact
+# carries only inflection forms and at most one US plus one UK pronunciation.
+# The curated layer keeps the full source data for audit and future products.
+INFLECTION_FORM_TAGS = frozenset(
+    {"plural", "comparative", "superlative", "past", "participle", "present", "third-person", "singular"}
+)
+US_PRONUNCIATION_TAGS = frozenset({"General-American", "US"})
+UK_PRONUNCIATION_TAGS = frozenset({"Received-Pronunciation", "UK"})
+
+
+def select_distribution_forms(curated_forms: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    selected = []
+    for form in curated_forms:
+        tags = set(form.get("tags") or [])
+        if not tags & INFLECTION_FORM_TAGS:
+            continue
+        selected.append(
+            {
+                "text": form.get("form"),
+                "tags": sorted(tags),
+                "roman": form.get("roman"),
+            }
+        )
+    return selected
+
+
+def select_distribution_pronunciations(
+    curated_pronunciations: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    def first_ipa_with(tag_set: frozenset[str]) -> dict[str, Any] | None:
+        for item in curated_pronunciations:
+            if item.get("ipa") and set(item.get("tags") or []) & tag_set:
+                return item
+        return None
+
+    def as_document(item: dict[str, Any], variety: str | None) -> dict[str, Any]:
+        return {
+            "ipa": item.get("ipa"),
+            "text": item.get("pronunciation_text"),
+            "tags": [variety] if variety else [],
+        }
+
+    selected = []
+    us = first_ipa_with(US_PRONUNCIATION_TAGS)
+    uk = first_ipa_with(UK_PRONUNCIATION_TAGS)
+    if us is not None:
+        selected.append(as_document(us, "US"))
+    if uk is not None:
+        selected.append(as_document(uk, "UK"))
+    if not selected:
+        for item in curated_pronunciations:
+            if item.get("ipa") or item.get("pronunciation_text"):
+                selected.append(as_document(item, None))
+                break
+    return selected

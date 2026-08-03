@@ -42,7 +42,7 @@ Non-goals:
 
 ## Distribution JSONL
 
-The implemented final JSONL contract is `distribution_entry_v1`.
+The implemented final JSONL contract is `distribution_entry_v4`.
 
 Each row represents one learner-facing dictionary entry and does not expose
 internal pipeline-stage wrappers such as `curated` and `llm`.
@@ -51,7 +51,7 @@ internal pipeline-stage wrappers such as `curated` and `llm`.
 
 ```json
 {
-  "schema_version": "distribution_entry_v1",
+  "schema_version": "distribution_entry_v4",
   "entry_id": "string",
   "headword": "string",
   "normalized_headword": "string",
@@ -65,6 +65,7 @@ internal pipeline-stage wrappers such as `curated` and `llm`.
   },
   "entry_type": "standard",
   "headword_summary": "string",
+  "memory_hook": "string",
   "study_notes": ["string"],
   "etymology_note": "string or null",
   "etymologies": [],
@@ -74,15 +75,17 @@ internal pipeline-stage wrappers such as `curated` and `llm`.
 
 ### Pos-group identity rule
 
-Distribution export uses a stable `pos_group_id`, derived from `(pos,
-etymology_id)`, to prevent same-POS groups from being merged incorrectly when a
-headword has multiple etymologies.
+Inside the pipeline, generation alignment uses a composite `pos_group_id`
+derived from `(pos, etymology_id)`. That identifier is internal and is NOT
+exported: distribution documents identify a pos group by the `(pos,
+etymology_id)` pair directly, and clients must never parse a composite id
+string.
 
 Each distribution `pos_group` row therefore contains:
 
-- `pos_group_id`
 - `pos`
 - `etymology_id`
+- `summary` and optional `usage_note` (generated)
 
 ### Meaning-level rule
 
@@ -91,10 +94,16 @@ glosses.
 
 Every meaning row should have:
 
+- required `sense_id` traceable to the curated source sense
+- required `priority`, exactly one of `core`, `common`, `rare`; clients may
+  hide `rare` meanings by default
 - optional `short_gloss` for compact indexing or quick scanning
-- required `learner_explanation` as the main Chinese natural-language
-  explanation
+- required `learner_explanation` as the main definition-language explanation
 - optional `usage_note`
+- `examples`: generated bilingual pairs `{"text", "translation"}` for core and
+  common meanings. Source quotations are NOT part of the distribution
+  contract; they remain available in the audit export. Sense-level relation
+  edges are also excluded (they were empty for 85% of senses).
 
 The learner explanation is the product field.
 The short gloss is only a helper field.
@@ -106,7 +115,7 @@ entirely. The export metadata records the number of skipped entries under
 ## Distribution SQLite
 
 The implemented SQLite artifact stores the same learner-facing
-`distribution_entry_v1` content under a SQLite packaging schema
+`distribution_entry_v4` content under a SQLite packaging schema
 `distribution_sqlite_v1`.
 
 Goals:
@@ -126,11 +135,11 @@ The SQLite artifact currently includes:
 - `pos_group_pronunciations`
 - `pos_group_relations`
 - `meanings`
-- `meaning_examples`
+- `meaning_examples` (generated bilingual examples)
 - `meaning_relations`
 
 The SQLite export must not invent a second product contract.
-It is a packaging of the same `distribution_entry_v1` semantics, not a new
+It is a packaging of the same `distribution_entry_v4` semantics, not a new
 editorial model.
 
 ### Language rule
@@ -203,12 +212,15 @@ The next LLM contract should generate only the fields that genuinely require
 generation, for example:
 
 - `headword_summary`
+- `memory_hook`
 - `study_notes`
 - `etymology_note`
 - `pos_groups[].summary`
-- `pos_groups[].usage_notes`
+- `pos_groups[].usage_note`
+- `meanings[].priority`
 - `meanings[].learner_explanation`
 - `meanings[].usage_note`
+- `meanings[].examples`
 
 It should not generate:
 
@@ -260,3 +272,19 @@ Tests for the implemented distribution export assert:
 - presence of `definition_language`
 - presence of `learner_explanation`
 - product rows remain reproducible from stored curated and llm runs
+
+
+## Distribution Packaging Rules (user-approved 2026-08-03)
+
+- `forms` carries inflection forms only (tags intersecting plural /
+  comparative / superlative / past / participle / present / third-person /
+  singular). Alternative spellings and abbreviations stay in curated data.
+- `pronunciations` carries at most one US IPA (General-American / US tags)
+  and one UK IPA (Received-Pronunciation / UK tags); when neither exists, the
+  first available pronunciation is used untagged. `audio_url` is not part of
+  the contract because source audio coverage is unreliable (~35%).
+- Entries whose sense count exceeds the shard threshold are generated in
+  parts (overview call plus chunked pos-group calls) and assembled
+  deterministically; the assembled payload passes the same full-skeleton
+  validation as single-call entries, so the distribution contract is
+  unaffected by sharding.

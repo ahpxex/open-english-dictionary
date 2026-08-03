@@ -8,7 +8,8 @@ from typing import Any
 from open_dictionary.pipeline import ProgressCallback, ThrottledProgressReporter, emit_progress
 
 
-DISTRIBUTION_SCHEMA_VERSION = "distribution_entry_v1"
+DISTRIBUTION_SCHEMA_VERSION = "distribution_entry_v4"
+MEANING_PRIORITIES = ("core", "common", "rare")
 
 
 @dataclass(frozen=True)
@@ -45,6 +46,7 @@ def validate_distribution_document(document: dict[str, Any]) -> dict[str, Any]:
         "definition_language",
         "entry_type",
         "headword_summary",
+        "memory_hook",
         "study_notes",
         "etymology_note",
         "etymologies",
@@ -65,6 +67,7 @@ def validate_distribution_document(document: dict[str, Any]) -> dict[str, Any]:
     if document["entry_type"] not in {"standard", "proverb", "affix"}:
         raise ValueError("Distribution document entry_type must be one of standard/proverb/affix")
     _require_non_empty_string(document["headword_summary"], "headword_summary")
+    _require_non_empty_string(document["memory_hook"], "memory_hook")
     document["study_notes"] = _normalize_string_list(document["study_notes"], field_name="study_notes")
     document["etymology_note"] = _normalize_optional_text(document["etymology_note"], field_name="etymology_note")
 
@@ -75,12 +78,14 @@ def validate_distribution_document(document: dict[str, Any]) -> dict[str, Any]:
 
     if not isinstance(document["pos_groups"], list):
         raise ValueError("Distribution document pos_groups must be an array")
-    pos_group_ids: set[str] = set()
+    group_identities: set[tuple[str, str | None]] = set()
     for index, item in enumerate(document["pos_groups"], start=1):
-        pos_group_id = _validate_pos_group(item, index=index)
-        if pos_group_id in pos_group_ids:
-            raise ValueError(f"Distribution document contains duplicate pos_group_id: {pos_group_id}")
-        pos_group_ids.add(pos_group_id)
+        identity = _validate_pos_group(item, index=index)
+        if identity in group_identities:
+            raise ValueError(
+                f"Distribution document contains duplicate pos group for pos/etymology: {identity}"
+            )
+        group_identities.add(identity)
 
     return document
 
@@ -102,14 +107,15 @@ def _validate_etymology(item: Any, *, index: int) -> None:
     _normalize_string_list(item.get("pos_members"), field_name=f"etymologies[{index}].pos_members")
 
 
-def _validate_pos_group(item: Any, *, index: int) -> str:
+def _validate_pos_group(item: Any, *, index: int) -> tuple[str, str | None]:
     if not isinstance(item, dict):
         raise ValueError(f"pos_groups[{index}] must be an object")
-    pos_group_id = _require_non_empty_string(item.get("pos_group_id"), f"pos_groups[{index}].pos_group_id")
-    _require_non_empty_string(item.get("pos"), f"pos_groups[{index}].pos")
-    _normalize_optional_text(item.get("etymology_id"), field_name=f"pos_groups[{index}].etymology_id")
+    if "pos_group_id" in item:
+        raise ValueError(f"pos_groups[{index}] must not expose the internal pos_group_id")
+    pos = _require_non_empty_string(item.get("pos"), f"pos_groups[{index}].pos")
+    etymology_id = _normalize_optional_text(item.get("etymology_id"), field_name=f"pos_groups[{index}].etymology_id")
     _require_non_empty_string(item.get("summary"), f"pos_groups[{index}].summary")
-    _normalize_optional_text(item.get("usage_notes"), field_name=f"pos_groups[{index}].usage_notes")
+    _normalize_optional_text(item.get("usage_note"), field_name=f"pos_groups[{index}].usage_note")
 
     if not isinstance(item.get("forms"), list):
         raise ValueError(f"pos_groups[{index}].forms must be an array")
@@ -123,12 +129,12 @@ def _validate_pos_group(item: Any, *, index: int) -> str:
 
     if not isinstance(item.get("meanings"), list) or not item["meanings"]:
         raise ValueError(f"pos_groups[{index}].meanings must be a non-empty array")
-    meaning_ids: set[str] = set()
+    sense_ids: set[str] = set()
     for meaning_index, meaning in enumerate(item["meanings"], start=1):
-        meaning_id = _validate_meaning(meaning, field_name=f"pos_groups[{index}].meanings[{meaning_index}]")
-        if meaning_id in meaning_ids:
-            raise ValueError(f"pos_groups[{index}] contains duplicate meaning_id: {meaning_id}")
-        meaning_ids.add(meaning_id)
+        sense_id = _validate_meaning(meaning, field_name=f"pos_groups[{index}].meanings[{meaning_index}]")
+        if sense_id in sense_ids:
+            raise ValueError(f"pos_groups[{index}] contains duplicate sense_id: {sense_id}")
+        sense_ids.add(sense_id)
 
     if not isinstance(item.get("relations"), list):
         raise ValueError(f"pos_groups[{index}].relations must be an array")
@@ -139,7 +145,7 @@ def _validate_pos_group(item: Any, *, index: int) -> str:
             allowed_types={"derived_term", "related_term", "synonym", "antonym", "descendant"},
         )
 
-    return pos_group_id
+    return (pos, etymology_id)
 
 
 def _validate_form(item: Any, *, field_name: str) -> None:
@@ -153,49 +159,52 @@ def _validate_form(item: Any, *, field_name: str) -> None:
 def _validate_pronunciation(item: Any, *, field_name: str) -> None:
     if not isinstance(item, dict):
         raise ValueError(f"{field_name} must be an object")
+    if "audio_url" in item:
+        raise ValueError(f"{field_name} must not carry audio_url in the distribution contract")
     ipa = _normalize_optional_text(item.get("ipa"), field_name=f"{field_name}.ipa")
     text = _normalize_optional_text(item.get("text"), field_name=f"{field_name}.text")
-    audio_url = _normalize_optional_text(item.get("audio_url"), field_name=f"{field_name}.audio_url")
     _normalize_string_list(item.get("tags"), field_name=f"{field_name}.tags")
-    if not any((ipa, text, audio_url)):
-        raise ValueError(f"{field_name} must contain at least one of ipa/text/audio_url")
+    if not any((ipa, text)):
+        raise ValueError(f"{field_name} must contain at least one of ipa/text")
 
 
 def _validate_meaning(item: Any, *, field_name: str) -> str:
     if not isinstance(item, dict):
         raise ValueError(f"{field_name} must be an object")
-    meaning_id = _require_non_empty_string(item.get("meaning_id"), f"{field_name}.meaning_id")
+    if "meaning_id" in item:
+        raise ValueError(f"{field_name} must use sense_id, not the legacy meaning_id")
+    sense_id = _require_non_empty_string(item.get("sense_id"), f"{field_name}.sense_id")
+    priority = _require_non_empty_string(item.get("priority"), f"{field_name}.priority")
+    if priority not in MEANING_PRIORITIES:
+        raise ValueError(f"{field_name}.priority must be one of {sorted(MEANING_PRIORITIES)}")
     _normalize_optional_text(item.get("short_gloss"), field_name=f"{field_name}.short_gloss")
     _require_non_empty_string(item.get("learner_explanation"), f"{field_name}.learner_explanation")
     _normalize_optional_text(item.get("usage_note"), field_name=f"{field_name}.usage_note")
     _normalize_string_list(item.get("labels"), field_name=f"{field_name}.labels")
     _normalize_string_list(item.get("topics"), field_name=f"{field_name}.topics")
 
+    if "citations" in item:
+        raise ValueError(
+            f"{field_name} must not carry citations; source quotations live in the audit export"
+        )
+    if "relations" in item:
+        raise ValueError(
+            f"{field_name} must not carry sense-level relations in the distribution contract"
+        )
+
     if not isinstance(item.get("examples"), list):
         raise ValueError(f"{field_name}.examples must be an array")
     for example_index, example in enumerate(item["examples"], start=1):
-        _validate_example(example, field_name=f"{field_name}.examples[{example_index}]")
+        _validate_generated_example(example, field_name=f"{field_name}.examples[{example_index}]")
 
-    if not isinstance(item.get("relations"), list):
-        raise ValueError(f"{field_name}.relations must be an array")
-    for relation_index, relation in enumerate(item["relations"], start=1):
-        _validate_relation(
-            relation,
-            field_name=f"{field_name}.relations[{relation_index}]",
-            allowed_types={"form_of", "alternative_of", "compound_of"},
-        )
-
-    return meaning_id
+    return sense_id
 
 
-def _validate_example(item: Any, *, field_name: str) -> None:
+def _validate_generated_example(item: Any, *, field_name: str) -> None:
     if not isinstance(item, dict):
         raise ValueError(f"{field_name} must be an object")
-    _require_non_empty_string(item.get("source_text"), f"{field_name}.source_text")
-    _normalize_optional_text(item.get("translation"), field_name=f"{field_name}.translation")
-    _normalize_optional_text(item.get("note"), field_name=f"{field_name}.note")
-    _normalize_optional_text(item.get("ref"), field_name=f"{field_name}.ref")
-    _normalize_optional_text(item.get("type"), field_name=f"{field_name}.type")
+    _require_non_empty_string(item.get("text"), f"{field_name}.text")
+    _require_non_empty_string(item.get("translation"), f"{field_name}.translation")
 
 
 def _validate_relation(item: Any, *, field_name: str, allowed_types: set[str]) -> None:

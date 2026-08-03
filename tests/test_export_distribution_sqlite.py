@@ -233,6 +233,7 @@ def test_run_export_distribution_sqlite_stage_writes_output_and_manifest(
             entry_id=entry_id,
             payload={
                 "headword_summary": "整体说明。",
+                "memory_hook": "一句帮助记忆的主线。",
                 "study_notes": ["学习提示。"],
                 "etymology_note": None,
                 "pos_groups": [
@@ -240,13 +241,17 @@ def test_run_export_distribution_sqlite_stage_writes_output_and_manifest(
                         "pos_group_id": build_pos_group_id(pos="adj", etymology_id="et1"),
                         "pos": "adj",
                         "summary": "形容词整体说明。",
-                        "usage_notes": None,
+                        "usage_note": None,
                         "meanings": [
                             {
                                 "sense_id": "s1",
+                                "priority": "core",
                                 "short_gloss": "复杂精密的",
                                 "learner_explanation": "详细解释。",
                                 "usage_note": None,
+                                "examples": [
+                                    {"text": "A generated example sentence.", "translation": "一条生成的例句。"}
+                                ],
                             }
                         ],
                     }
@@ -269,6 +274,7 @@ def test_run_export_distribution_sqlite_stage_writes_output_and_manifest(
         ).fetchone()
         meanings_count = connection.execute("select count(*) from meanings").fetchone()[0]
         examples_count = connection.execute("select count(*) from meaning_examples").fetchone()[0]
+        example_row = connection.execute("select text, translation from meaning_examples").fetchone()
         metadata = sqlite_metadata(connection)
 
     with get_connection(settings) as conn:
@@ -287,11 +293,12 @@ def test_run_export_distribution_sqlite_stage_writes_output_and_manifest(
     assert entry_row[0] == "sophisticated"
     assert entry_row[1] == "sophisticated"
     assert entry_row[2] == "zh-Hans"
-    assert json.loads(entry_row[3])["schema_version"] == "distribution_entry_v1"
+    assert json.loads(entry_row[3])["schema_version"] == "distribution_entry_v4"
     assert meanings_count == 1
     assert examples_count == 1
+    assert example_row == ("A generated example sentence.", "一条生成的例句。")
     assert metadata["entry_count"] == 1
-    assert metadata["distribution_schema_version"] == "distribution_entry_v1"
+    assert metadata["distribution_schema_version"] == "distribution_entry_v4"
     assert metadata["sqlite_schema_version"] == "distribution_sqlite_v1"
     assert artifact_type == "distribution_sqlite"
     assert sqlite_schema_version == "distribution_sqlite_v1"
@@ -314,6 +321,7 @@ def test_run_export_distribution_sqlite_stage_selects_requested_definition_langu
             definition_language=DEFAULT_DEFINITION_LANGUAGE.as_dict(),
             payload={
                 "headword_summary": "中文整体说明。",
+                "memory_hook": "一句帮助记忆的主线。",
                 "study_notes": [],
                 "etymology_note": None,
                 "pos_groups": [
@@ -321,10 +329,11 @@ def test_run_export_distribution_sqlite_stage_selects_requested_definition_langu
                         "pos_group_id": build_pos_group_id(pos="adj", etymology_id="et1"),
                         "pos": "adj",
                         "summary": "中文词性说明。",
-                        "usage_notes": None,
+                        "usage_note": None,
                         "meanings": [
                             {
                                 "sense_id": "s1",
+                                "priority": "core",
                                 "short_gloss": "复杂",
                                 "learner_explanation": "中文解释。",
                                 "usage_note": None,
@@ -340,6 +349,7 @@ def test_run_export_distribution_sqlite_stage_selects_requested_definition_langu
             definition_language=ENGLISH_DEFINITION_LANGUAGE,
             payload={
                 "headword_summary": "English overall summary.",
+                "memory_hook": "一句帮助记忆的主线。",
                 "study_notes": ["English study note."],
                 "etymology_note": None,
                 "pos_groups": [
@@ -347,10 +357,11 @@ def test_run_export_distribution_sqlite_stage_selects_requested_definition_langu
                         "pos_group_id": build_pos_group_id(pos="adj", etymology_id="et1"),
                         "pos": "adj",
                         "summary": "English adjective summary.",
-                        "usage_notes": None,
+                        "usage_note": None,
                         "meanings": [
                             {
                                 "sense_id": "s1",
+                                "priority": "core",
                                 "short_gloss": "refined",
                                 "learner_explanation": "Detailed English explanation.",
                                 "usage_note": None,

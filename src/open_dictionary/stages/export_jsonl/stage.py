@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -38,7 +39,7 @@ def run_export_jsonl_stage(
     curated_table: str = "curated.entries",
     llm_table: str = "llm.entry_enrichments",
     artifact_table: str = "export.artifacts",
-    model: str | None = None,
+    models: Sequence[str] | None = None,
     prompt_version: str | None = None,
     definition_language: LanguageSpec | dict[str, Any] = DEFAULT_DEFINITION_LANGUAGE,
     include_unenriched: bool = True,
@@ -64,7 +65,7 @@ def run_export_jsonl_stage(
                 "curated_table": curated_table,
                 "definitions_table": llm_table,
                 "artifact_table": artifact_table,
-                "model": model,
+                "models": list(models) if models else None,
                 "prompt_template_version": (
                     prompt_bundle.template_version if prompt_bundle is not None else None
                 ),
@@ -84,7 +85,7 @@ def run_export_jsonl_stage(
             stage=EXPORT_AUDIT_JSONL_STAGE,
             event="export_start",
             include_unenriched=include_unenriched,
-            model=model,
+            models=list(models) if models else None,
             prompt_version=(
                 prompt_bundle.resolved_prompt_version if prompt_bundle is not None else None
             ),
@@ -98,7 +99,7 @@ def run_export_jsonl_stage(
                 settings=settings,
                 curated_table=curated_table,
                 llm_table=llm_table,
-                model=model,
+                models=models,
                 prompt_bundle=prompt_bundle,
                 definition_language=language,
                 include_unenriched=include_unenriched,
@@ -137,7 +138,7 @@ def run_export_jsonl_stage(
                 metadata={
                     "curated_table": curated_table,
                     "definitions_table": llm_table,
-                    "model": model,
+                    "models": list(models) if models else None,
                     "prompt_template_version": (
                         prompt_bundle.template_version if prompt_bundle is not None else None
                     ),
@@ -180,7 +181,7 @@ def iter_export_records(
     settings: RuntimeSettings,
     curated_table: str,
     llm_table: str,
-    model: str | None,
+    models: Sequence[str] | None,
     prompt_bundle,
     definition_language: LanguageSpec | dict[str, Any],
     include_unenriched: bool,
@@ -192,7 +193,7 @@ def iter_export_records(
             settings=settings,
             curated_table=curated_table,
             llm_table=llm_table,
-            model=model,
+            models=models,
             prompt_bundle=prompt_bundle,
             include_unenriched=include_unenriched,
             progress_callback=progress_callback,
@@ -219,9 +220,9 @@ def iter_export_records(
     ).format(llm_identifier)
 
     params: list[Any] = [language.code]
-    if model is not None:
-        latest_enrichment_sql += sql.SQL(" AND model = %s")
-        params.append(model)
+    if models:
+        latest_enrichment_sql += sql.SQL(" AND model = ANY(%s)")
+        params.append(list(models))
     if prompt_bundle is not None:
         latest_enrichment_sql += sql.SQL(" AND prompt_version = %s")
         params.append(prompt_bundle.resolved_prompt_version)
@@ -300,7 +301,7 @@ def _iter_export_records_with_prompt_bundle(
     settings: RuntimeSettings,
     curated_table: str,
     llm_table: str,
-    model: str | None,
+    models: Sequence[str] | None,
     prompt_bundle: PromptBundle,
     include_unenriched: bool,
     progress_callback: ProgressCallback | None,
@@ -308,7 +309,7 @@ def _iter_export_records_with_prompt_bundle(
     candidates = load_matching_enrichment_candidates(
         settings=settings,
         llm_table=llm_table,
-        model=model,
+        models=models,
         prompt_bundle=prompt_bundle,
     )
     reporter = ThrottledProgressReporter(progress_callback, stage=EXPORT_AUDIT_JSONL_STAGE)
@@ -387,7 +388,7 @@ def load_matching_enrichment_candidates(
     *,
     settings: RuntimeSettings,
     llm_table: str,
-    model: str | None,
+    models: Sequence[str] | None,
     prompt_bundle: PromptBundle,
 ) -> dict[str, dict[str, dict[str, Any]]]:
     llm_identifier = identifier_from_dotted(llm_table)
@@ -412,9 +413,9 @@ def load_matching_enrichment_candidates(
         prompt_bundle.resolved_prompt_version,
         prompt_bundle.definition_language.code,
     ]
-    if model is not None:
-        query += sql.SQL(" AND model = %s")
-        params.append(model)
+    if models:
+        query += sql.SQL(" AND model = ANY(%s)")
+        params.append(list(models))
     query += sql.SQL(" ORDER BY entry_id, created_at DESC")
 
     with get_connection(settings) as conn:
@@ -459,7 +460,7 @@ def iter_export_documents(
     settings: RuntimeSettings,
     curated_table: str,
     llm_table: str,
-    model: str | None,
+    models: Sequence[str] | None,
     prompt_bundle,
     definition_language: LanguageSpec | dict[str, Any],
     include_unenriched: bool,
@@ -468,7 +469,7 @@ def iter_export_documents(
         settings=settings,
         curated_table=curated_table,
         llm_table=llm_table,
-        model=model,
+        models=models,
         prompt_bundle=prompt_bundle,
         definition_language=definition_language,
         include_unenriched=include_unenriched,
