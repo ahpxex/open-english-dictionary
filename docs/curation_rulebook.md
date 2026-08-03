@@ -454,7 +454,9 @@ Default:
 
 Default:
 
-- triage by default with `entry_type: proper_name`
+- keep with `entry_type: proper_name` flag (user-approved 2026-08-04;
+  previously triaged by default, which dropped primary senses of selected
+  headwords such as DNS = Domain Name System)
 - do not silently mix with ordinary lexical nouns
 - only promote selected subclasses later if product scope explicitly expands
 

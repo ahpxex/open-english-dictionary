@@ -292,7 +292,7 @@ def test_build_distribution_document_merges_curated_and_llm_fields() -> None:
         definition_language=DEFAULT_DEFINITION_LANGUAGE,
     )
 
-    assert document["schema_version"] == "distribution_entry_v4"
+    assert document["schema_version"] == "distribution_entry_v5"
     assert document["headword"] == "sophisticated"
     assert document["definition_language"]["code"] == "zh-Hans"
     assert "entries" not in document
@@ -431,10 +431,10 @@ def test_run_export_distribution_jsonl_stage_writes_output_and_manifest(
     rows = read_jsonl(output)
 
     assert result.entry_count == 1
-    assert rows[0]["schema_version"] == "distribution_entry_v4"
+    assert rows[0]["schema_version"] == "distribution_entry_v5"
     assert rows[0]["headword"] == "sophisticated"
     assert artifact_type == "distribution_jsonl"
-    assert schema_version == "distribution_entry_v4"
+    assert schema_version == "distribution_entry_v5"
     assert curated_run_ids
     assert definition_run_ids
 

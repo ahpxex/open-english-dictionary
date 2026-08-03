@@ -13,10 +13,12 @@ KEEP_WITH_FLAG_POS = {
     "proverb": "entry_type:proverb",
     "suffix": "entry_type:affix",
     "prefix": "entry_type:affix",
+    # User-approved 2026-08-04: proper-name groups are kept (flagged) instead
+    # of deferred, so selected headwords keep senses like DNS = Domain Name
+    # System that Wiktionary files under pos "name".
+    "name": "entry_type:proper_name",
 }
-TRIAGE_WITH_FLAG_POS = {
-    "name": ("entry_type:proper_name", "defer"),
-}
+TRIAGE_WITH_FLAG_POS: dict[str, tuple[str, str]] = {}
 RELATION_POS = {
     "romanization": "convert_to_relation",
     "soft-redirect": "convert_to_relation",

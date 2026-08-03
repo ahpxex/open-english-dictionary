@@ -293,12 +293,12 @@ def test_run_export_distribution_sqlite_stage_writes_output_and_manifest(
     assert entry_row[0] == "sophisticated"
     assert entry_row[1] == "sophisticated"
     assert entry_row[2] == "zh-Hans"
-    assert json.loads(entry_row[3])["schema_version"] == "distribution_entry_v4"
+    assert json.loads(entry_row[3])["schema_version"] == "distribution_entry_v5"
     assert meanings_count == 1
     assert examples_count == 1
     assert example_row == ("A generated example sentence.", "一条生成的例句。")
     assert metadata["entry_count"] == 1
-    assert metadata["distribution_schema_version"] == "distribution_entry_v4"
+    assert metadata["distribution_schema_version"] == "distribution_entry_v5"
     assert metadata["sqlite_schema_version"] == "distribution_sqlite_v1"
     assert artifact_type == "distribution_sqlite"
     assert sqlite_schema_version == "distribution_sqlite_v1"

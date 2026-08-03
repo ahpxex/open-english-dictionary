@@ -221,7 +221,7 @@ def test_fixture_pipeline_distribution_export_rows_have_learner_facing_shape(
 
     first_doc = json.loads(output_path.read_text(encoding="utf-8").splitlines()[0])
 
-    assert first_doc["schema_version"] == "distribution_entry_v4"
+    assert first_doc["schema_version"] == "distribution_entry_v5"
     assert "entries" not in first_doc
     assert "definitions" not in first_doc
     assert "headword_summary" in first_doc
@@ -311,9 +311,9 @@ def test_fixture_pipeline_distribution_export_validates_all_rows_on_full_fixture
     ]
 
     assert raw_result.rows_loaded == 1000
-    assert curated_result.entries_written == 742
-    assert llm_result.succeeded == 742
-    assert 0 < export_result.entry_count <= 742
+    assert curated_result.entries_written == 857
+    assert llm_result.succeeded == 857
+    assert 0 < export_result.entry_count <= 857
     assert len(documents) == export_result.entry_count
     for document in documents:
         validate_distribution_document(document)

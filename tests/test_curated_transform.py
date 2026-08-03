@@ -52,15 +52,17 @@ def test_classify_raw_row_keeps_core_pos() -> None:
     assert triage is None
 
 
-def test_classify_raw_row_triages_name_entries_by_default() -> None:
-    # This case captures the tightened V1 scope: proper names no longer enter
-    # the main export set by default.
+def test_classify_raw_row_keeps_name_entries_with_proper_name_flag() -> None:
+    # User-approved 2026-08-04: proper-name groups are kept and flagged so
+    # selected headwords retain senses like DNS = Domain Name System.
     decision, triage = curated.classify_raw_row(make_raw_row(pos="name"))
 
-    assert decision == "triage"
-    assert triage is not None
-    assert triage.reason_code == "record_type_out_of_scope"
-    assert triage.payload["entry_flag"] == "entry_type:proper_name"
+    assert decision == "keep_with_flag"
+    assert triage is None
+
+
+def test_pos_flags_for_name_rows_carry_proper_name_flag() -> None:
+    assert curated.pos_flags_for_row(make_raw_row(pos="name")) == {"entry_type:proper_name"}
 
 
 def test_classify_raw_row_triages_relation_only_pos() -> None:

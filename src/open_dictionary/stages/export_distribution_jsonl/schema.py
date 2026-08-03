@@ -8,7 +8,7 @@ from typing import Any
 from open_dictionary.pipeline import ProgressCallback, ThrottledProgressReporter, emit_progress
 
 
-DISTRIBUTION_SCHEMA_VERSION = "distribution_entry_v4"
+DISTRIBUTION_SCHEMA_VERSION = "distribution_entry_v5"
 MEANING_PRIORITIES = ("core", "common", "rare")
 
 
@@ -64,8 +64,10 @@ def validate_distribution_document(document: dict[str, Any]) -> dict[str, Any]:
     _validate_language(document["headword_language"], field_name="headword_language")
     _validate_language(document["definition_language"], field_name="definition_language")
 
-    if document["entry_type"] not in {"standard", "proverb", "affix"}:
-        raise ValueError("Distribution document entry_type must be one of standard/proverb/affix")
+    if document["entry_type"] not in {"standard", "proverb", "affix", "proper_name"}:
+        raise ValueError(
+            "Distribution document entry_type must be one of standard/proverb/affix/proper_name"
+        )
     _require_non_empty_string(document["headword_summary"], "headword_summary")
     _require_non_empty_string(document["memory_hook"], "memory_hook")
     document["study_notes"] = _normalize_string_list(document["study_notes"], field_name="study_notes")
@@ -113,6 +115,8 @@ def _validate_pos_group(item: Any, *, index: int) -> tuple[str, str | None]:
     if "pos_group_id" in item:
         raise ValueError(f"pos_groups[{index}] must not expose the internal pos_group_id")
     pos = _require_non_empty_string(item.get("pos"), f"pos_groups[{index}].pos")
+    if not isinstance(item.get("proper_name"), bool):
+        raise ValueError(f"pos_groups[{index}].proper_name must be a boolean")
     etymology_id = _normalize_optional_text(item.get("etymology_id"), field_name=f"pos_groups[{index}].etymology_id")
     _require_non_empty_string(item.get("summary"), f"pos_groups[{index}].summary")
     _normalize_optional_text(item.get("usage_note"), field_name=f"pos_groups[{index}].usage_note")

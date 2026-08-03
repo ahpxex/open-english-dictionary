@@ -319,6 +319,7 @@ def _initialize_distribution_sqlite(connection: sqlite3.Connection) -> None:
             pos_group_index INTEGER NOT NULL,
             pos TEXT NOT NULL,
             etymology_id TEXT,
+            proper_name INTEGER NOT NULL CHECK (proper_name IN (0, 1)),
             summary TEXT NOT NULL,
             usage_note TEXT,
             PRIMARY KEY (entry_id, pos_group_index),
@@ -473,15 +474,17 @@ def _insert_distribution_document(connection: sqlite3.Connection, document: dict
                 pos_group_index,
                 pos,
                 etymology_id,
+                proper_name,
                 summary,
                 usage_note
-            ) VALUES (?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 entry_id,
                 pos_group_index,
                 pos_group["pos"],
                 pos_group.get("etymology_id"),
+                1 if pos_group.get("proper_name") else 0,
                 pos_group["summary"],
                 pos_group.get("usage_note"),
             ),

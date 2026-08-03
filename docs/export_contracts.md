@@ -42,7 +42,7 @@ Non-goals:
 
 ## Distribution JSONL
 
-The implemented final JSONL contract is `distribution_entry_v4`.
+The implemented final JSONL contract is `distribution_entry_v5`.
 
 Each row represents one learner-facing dictionary entry and does not expose
 internal pipeline-stage wrappers such as `curated` and `llm`.
@@ -51,7 +51,7 @@ internal pipeline-stage wrappers such as `curated` and `llm`.
 
 ```json
 {
-  "schema_version": "distribution_entry_v4",
+  "schema_version": "distribution_entry_v5",
   "entry_id": "string",
   "headword": "string",
   "normalized_headword": "string",
@@ -85,7 +85,12 @@ Each distribution `pos_group` row therefore contains:
 
 - `pos`
 - `etymology_id`
+- `proper_name`: boolean, true for groups sourced from Wiktionary pos
+  `name`; clients may style proper-name senses differently
 - `summary` and optional `usage_note` (generated)
+
+`entry_type` extends to `proper_name` when every pos group of the entry is a
+proper-name group.
 
 ### Meaning-level rule
 
@@ -118,7 +123,7 @@ entirely. The export metadata records the number of skipped entries under
 ## Distribution SQLite
 
 The implemented SQLite artifact stores the same learner-facing
-`distribution_entry_v4` content under a SQLite packaging schema
+`distribution_entry_v5` content under a SQLite packaging schema
 `distribution_sqlite_v1`.
 
 Goals:
@@ -142,7 +147,7 @@ The SQLite artifact currently includes:
 - `meaning_relations`
 
 The SQLite export must not invent a second product contract.
-It is a packaging of the same `distribution_entry_v4` semantics, not a new
+It is a packaging of the same `distribution_entry_v5` semantics, not a new
 editorial model.
 
 ### Language rule

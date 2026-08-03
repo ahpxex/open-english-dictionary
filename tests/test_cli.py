@@ -521,7 +521,7 @@ def test_validate_distribution_jsonl_command_reads_file(
     output_path.write_text(
         json.dumps(
             {
-                "schema_version": "distribution_entry_v4",
+                "schema_version": "distribution_entry_v5",
                 "entry_id": "entry-1",
                 "headword": "barra",
                 "normalized_headword": "barra",
@@ -536,6 +536,7 @@ def test_validate_distribution_jsonl_command_reads_file(
                 "pos_groups": [
                     {
                         "pos": "noun",
+                        "proper_name": False,
                         "etymology_id": "et1",
                         "summary": "Noun summary.",
                         "usage_note": None,

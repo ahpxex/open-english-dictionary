@@ -269,7 +269,10 @@ def build_distribution_document(
             "name": curated_payload["lang"],
         },
         "definition_language": language.as_dict(),
-        "entry_type": derive_entry_type(curated_payload.get("entry_flags") or []),
+        "entry_type": derive_entry_type(
+            curated_payload.get("entry_flags") or [],
+            all_groups_proper_name=_all_groups_proper_name(curated_payload),
+        ),
         "headword_summary": llm_payload["headword_summary"],
         "memory_hook": llm_payload["memory_hook"],
         "study_notes": llm_payload["study_notes"],
@@ -331,6 +334,7 @@ def build_distribution_pos_group(
     return {
         "pos": curated_group.get("pos"),
         "etymology_id": curated_group.get("etymology_id"),
+        "proper_name": "entry_type:proper_name" in (curated_group.get("pos_flags") or []),
         "summary": llm_group.get("summary"),
         "usage_note": llm_group.get("usage_note"),
         "forms": select_distribution_forms(curated_group.get("forms", [])),
@@ -350,13 +354,25 @@ def build_distribution_pos_group(
     }
 
 
-def derive_entry_type(entry_flags: list[str]) -> str:
+def derive_entry_type(entry_flags: list[str], *, all_groups_proper_name: bool = False) -> str:
     flag_set = set(entry_flags)
     if "entry_type:proverb" in flag_set:
         return "proverb"
     if "entry_type:affix" in flag_set:
         return "affix"
+    if all_groups_proper_name and "entry_type:proper_name" in flag_set:
+        return "proper_name"
     return "standard"
+
+
+def _all_groups_proper_name(curated_payload: dict[str, Any]) -> bool:
+    groups = curated_payload.get("pos_groups") or []
+    if not groups:
+        return False
+    return all(
+        "entry_type:proper_name" in (group.get("pos_flags") or [])
+        for group in groups
+    )
 
 
 # Distribution packaging rules (user-approved 2026-08-03): the learner artifact
