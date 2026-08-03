@@ -43,6 +43,7 @@ from .schema import (
 
 LLM_ENRICH_STAGE = "definitions.generate"
 PERSIST_COMMIT_INTERVAL = 25
+RETRY_TEMPERATURE = 0.3
 
 
 @dataclass(frozen=True)
@@ -376,6 +377,7 @@ class GenerationCall:
     generation: LLMGenerationResult
     attempts: int
     used_compact_retry_prompt: bool
+    temperature: float
 
     def as_metadata(self) -> dict[str, Any]:
         return {
@@ -384,6 +386,7 @@ class GenerationCall:
             "api_base": self.generation.api_base,
             "attempts": self.attempts,
             "used_compact_retry_prompt": self.used_compact_retry_prompt,
+            "temperature": self.temperature,
             "usage": {
                 "prompt_tokens": self.generation.prompt_tokens,
                 "completion_tokens": self.generation.completion_tokens,
@@ -405,7 +408,7 @@ def enrich_one_entry(
     total_senses = sum(len(target["sense_ids"]) for target in expected_pos_targets)
 
     if total_senses > SHARD_SENSE_THRESHOLD:
-        validated, calls = _generate_sharded(
+        validated, calls, core_senses = _generate_sharded(
             llm_client=llm_client,
             prompt_bundle=prompt_bundle,
             source_payload=generation_source_payload,
@@ -415,6 +418,7 @@ def enrich_one_entry(
         raw_response = json.dumps(validated, ensure_ascii=False, sort_keys=True)
         generation_metadata = {
             "sharded": True,
+            "core_senses": core_senses,
             "chunk_count": len(calls) - 1,
             "calls": [call.as_metadata() for call in calls],
             "usage": {
@@ -446,6 +450,7 @@ def enrich_one_entry(
             "usage": call.as_metadata()["usage"],
             "attempts": call.attempts,
             "used_compact_retry_prompt": call.used_compact_retry_prompt,
+            "temperature": call.temperature,
         }
         model = call.generation.model
         retries = call.attempts - 1
@@ -480,16 +485,19 @@ def _call_with_retries(
 
     for attempt in range(1, max_retries + 1):
         # The compact prompt is a last resort: retry at full quality first so
-        # a transient failure does not permanently degrade the entry.
+        # a transient failure does not permanently degrade the entry. Middle
+        # retries add sampling temperature because at temperature 0 an
+        # identical request fails identically — the retry must explore.
         use_compact_retry_prompt = max_retries > 1 and attempt == max_retries
         system_prompt = compact_system_prompt if use_compact_retry_prompt else primary_system_prompt
         max_tokens = COMPACT_RETRY_MAX_TOKENS if use_compact_retry_prompt else DEFAULT_MAX_TOKENS
+        temperature = 0.0 if attempt == 1 or use_compact_retry_prompt else RETRY_TEMPERATURE
         last_generation = None
         try:
             generation = llm_client.generate_json(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
-                temperature=0.0,
+                temperature=temperature,
                 max_tokens=max_tokens,
             )
             last_generation = generation
@@ -500,6 +508,7 @@ def _call_with_retries(
                 generation=generation,
                 attempts=attempt,
                 used_compact_retry_prompt=use_compact_retry_prompt,
+                temperature=temperature,
             )
         except (json.JSONDecodeError, ValueError, LLMClientError) as exc:
             last_error = exc
@@ -534,23 +543,35 @@ def _generate_sharded(
     source_payload: dict[str, Any],
     expected_pos_targets: list[dict[str, Any]],
     max_retries: int,
-) -> tuple[dict[str, Any], list[GenerationCall]]:
+) -> tuple[dict[str, Any], list[GenerationCall], list[dict[str, str]]]:
+    all_sense_keys = {
+        (target["pos_group_id"], sense_id)
+        for target in expected_pos_targets
+        for sense_id in target["sense_ids"]
+    }
     overview_call = _call_with_retries(
         scope="overview",
         llm_client=llm_client,
         primary_system_prompt=prompt_bundle.overview_system_prompt,
         compact_system_prompt=prompt_bundle.overview_system_prompt,
         user_prompt=build_overview_user_prompt(build_overview_digest(source_payload)),
-        validate=validate_overview_payload,
+        validate=lambda payload: validate_overview_payload(
+            payload,
+            valid_sense_keys=all_sense_keys,
+        ),
         max_retries=max_retries,
     )
     overview_fields = overview_call.validated
+    core_senses = overview_fields["core_senses"]
 
     calls: list[GenerationCall] = [overview_call]
     chunk_group_lists: list[list[dict[str, Any]]] = []
-    for chunk_index, chunk_groups in enumerate(
-        plan_generation_chunks(source_payload, budget=CHUNK_SENSE_BUDGET), start=1
-    ):
+    chunks = plan_generation_chunks(source_payload, budget=CHUNK_SENSE_BUDGET)
+    total_senses = sum(
+        len(group.get("meanings") or [])
+        for group in source_payload.get("pos_groups", [])
+    )
+    for chunk_index, chunk_groups in enumerate(chunks, start=1):
         chunk_payload = {
             "entry_context": {
                 "headword": source_payload.get("headword"),
@@ -558,6 +579,9 @@ def _generate_sharded(
                 "definition_language": source_payload.get("definition_language"),
                 "headword_summary": overview_fields["headword_summary"],
                 "memory_hook": overview_fields["memory_hook"],
+                "core_senses": core_senses,
+                "part": {"index": chunk_index, "of": len(chunks)},
+                "total_senses_in_entry": total_senses,
             },
             "pos_groups": chunk_groups,
         }
@@ -581,12 +605,13 @@ def _generate_sharded(
         overview_fields=overview_fields,
         chunk_group_lists=chunk_group_lists,
         source_payload=source_payload,
+        core_senses=core_senses,
     )
     validated = validate_enrichment_payload(
         assembled,
         expected_pos_targets=expected_pos_targets,
     )
-    return validated, calls
+    return validated, calls, core_senses
 
 
 def plan_generation_chunks(
@@ -636,12 +661,15 @@ def assemble_sharded_payload(
     overview_fields: dict[str, Any],
     chunk_group_lists: list[list[dict[str, Any]]],
     source_payload: dict[str, Any],
+    core_senses: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Merge validated chunk outputs back into one full payload.
 
     When a group was split across chunks, the slice containing its first
     senses provides the group-level summary and usage note, and the meanings
-    are concatenated in skeleton order.
+    are concatenated in skeleton order. The overview call nominates the
+    entry-wide core senses with full visibility, so its decision is enforced
+    here: nominated senses become core, and no other sense may stay core.
     """
     groups_by_id: dict[str, dict[str, Any]] = {}
     for chunk_groups in chunk_group_lists:
@@ -661,6 +689,16 @@ def assemble_sharded_payload(
         if group_id not in groups_by_id:
             raise ValueError(f"Sharded generation produced no output for pos_group_id {group_id}")
         ordered_groups.append(groups_by_id[group_id])
+
+    if core_senses is not None:
+        nominated = {(item["pos_group_id"], item["sense_id"]) for item in core_senses}
+        for group in ordered_groups:
+            group_id = group["pos_group_id"]
+            for meaning in group["meanings"]:
+                if (group_id, meaning["sense_id"]) in nominated:
+                    meaning["priority"] = "core"
+                elif meaning["priority"] == "core":
+                    meaning["priority"] = "common"
 
     return {
         "headword_summary": overview_fields["headword_summary"],

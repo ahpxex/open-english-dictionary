@@ -309,9 +309,9 @@ def test_build_user_prompt_embeds_curated_payload() -> None:
     )
 
     assert "Generated-field source payload" in prompt
-    assert '"headword": "cat"' in prompt
-    assert '"definition_language": {' in prompt
-    assert '"code": "en"' in prompt
+    assert '"headword":"cat"' in prompt
+    assert '"definition_language":{' in prompt
+    assert '"code":"en"' in prompt
 
 
 def test_build_prompt_bundle_resolves_language_specific_prompt_version() -> None:
@@ -322,7 +322,7 @@ def test_build_prompt_bundle_resolves_language_specific_prompt_version() -> None
 
     assert bundle.template_version == PROMPT_VERSION
     assert bundle.resolved_prompt_version.endswith("__deflang__en")
-    assert "required definition language for this run is English (en)" in bundle.system_prompt
+    assert "English (en) is the required definition language" in bundle.system_prompt
 
 
 def test_validate_enrichment_payload_accepts_valid_shape() -> None:
@@ -1167,6 +1167,10 @@ class ShardAwareFakeLLMClient:
         if user_prompt.startswith("Entry digest"):
             self.calls.append("overview")
             response = {
+                "core_senses": [
+                    {"pos_group_id": "verb|_", "sense_id": "v1"},
+                    {"pos_group_id": "noun|_", "sense_id": "n1"},
+                ],
                 "headword_summary": "整体说明。",
                 "memory_hook": "一句记忆主线。",
                 "study_notes": [],
@@ -1187,7 +1191,7 @@ class ShardAwareFakeLLMClient:
                         "meanings": [
                             {
                                 "sense_id": m["sense_id"],
-                                "priority": "common",
+                                "priority": "core" if m["sense_id"] == "v2" else "common",
                                 "short_gloss": None,
                                 "learner_explanation": f"{m['sense_id']} 的解释。",
                                 "usage_note": None,
@@ -1240,6 +1244,19 @@ def test_enrich_one_entry_shards_large_entries_and_assembles_full_payload() -> N
     verb_group = payload["pos_groups"][0]
     assert len(verb_group["meanings"]) == 90
     assert verb_group["summary"] == "verb 概述。"
+    priorities = {
+        m["sense_id"]: m["priority"]
+        for group in payload["pos_groups"]
+        for m in group["meanings"]
+    }
+    assert priorities["v1"] == "core"
+    assert priorities["n1"] == "core"
+    assert priorities["v2"] == "common"
+    assert sum(1 for value in priorities.values() if value == "core") == 2
+    assert record["generation_metadata"]["core_senses"] == [
+        {"pos_group_id": "verb|_", "sense_id": "v1"},
+        {"pos_group_id": "noun|_", "sense_id": "n1"},
+    ]
     assert record["generation_metadata"]["sharded"] is True
     assert record["generation_metadata"]["chunk_count"] == expected_chunks
     assert record["generation_metadata"]["usage"]["completion_tokens"] == (expected_chunks + 1) * 100
@@ -1282,3 +1299,64 @@ def test_enrich_one_entry_small_entries_stay_single_call() -> None:
 
     assert client.calls == 1
     assert "sharded" not in record["generation_metadata"]
+
+
+def test_assemble_sharded_payload_enforces_pair_keyed_nominations() -> None:
+    # Regression: sense_ids repeat across pos groups (every group restarts at
+    # s1), so nominations must bind to (pos_group_id, sense_id) pairs — an
+    # id-only match once inflated 4 nominations into 17 core senses.
+    overview = {
+        "headword_summary": "整体说明。",
+        "memory_hook": "主线。",
+        "study_notes": [],
+        "etymology_note": None,
+    }
+    def meaning(sense_id, priority):
+        return {
+            "sense_id": sense_id,
+            "priority": priority,
+            "short_gloss": None,
+            "learner_explanation": "解释。",
+            "usage_note": None,
+            "examples": [],
+        }
+    chunk_groups = [[
+        {"pos_group_id": "verb|_", "pos": "verb", "summary": "V。", "usage_note": None,
+         "meanings": [meaning("s1", "core"), meaning("s2", "core")]},
+        {"pos_group_id": "noun|_", "pos": "noun", "summary": "N。", "usage_note": None,
+         "meanings": [meaning("s1", "common")]},
+    ]]
+    source = {"pos_groups": [
+        {"pos_group_id": "verb|_", "meanings": [{"sense_id": "s1"}, {"sense_id": "s2"}]},
+        {"pos_group_id": "noun|_", "meanings": [{"sense_id": "s1"}]},
+    ]}
+
+    assembled = llm_stage.assemble_sharded_payload(
+        overview_fields=overview,
+        chunk_group_lists=chunk_groups,
+        source_payload=source,
+        core_senses=[{"pos_group_id": "verb|_", "sense_id": "s1"}],
+    )
+
+    priorities = {
+        (g["pos_group_id"], m["sense_id"]): m["priority"]
+        for g in assembled["pos_groups"] for m in g["meanings"]
+    }
+    assert priorities[("verb|_", "s1")] == "core"
+    assert priorities[("verb|_", "s2")] == "common"
+    assert priorities[("noun|_", "s1")] == "common"
+
+
+def test_validate_pos_groups_normalizes_translated_pos_echo() -> None:
+    # Regression: models occasionally translate the redundant pos echo
+    # ("noun" -> "名词") at temperature 0; alignment is carried by
+    # pos_group_id, so the echo is normalized instead of failing the call.
+    payload = valid_payload("noun")
+    payload["pos_groups"][0]["pos"] = "名词"
+
+    validated = validate_enrichment_payload(
+        payload,
+        expected_pos_targets=[{"pos_group_id": build_pos_group_id(pos="noun", etymology_id=None), "pos": "noun", "sense_ids": ["s1"]}],
+    )
+
+    assert validated["pos_groups"][0]["pos"] == "noun"

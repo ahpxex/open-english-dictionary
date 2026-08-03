@@ -9,7 +9,7 @@ from typing import Any
 from open_dictionary.contracts import DEFAULT_DEFINITION_LANGUAGE, LanguageSpec, normalize_language_spec
 
 
-PROMPT_VERSION = "curated_v1_distribution_fields_v8"
+PROMPT_VERSION = "curated_v1_distribution_fields_v13"
 # Generous ceilings: sharding keeps every call at or below the chunk budget,
 # so these are safety nets rather than working limits. A tight cap truncates
 # mid-JSON and needlessly demotes entries to the compact fallback.
@@ -100,132 +100,57 @@ def build_system_prompt(definition_language: LanguageSpec | dict[str, Any]) -> s
     language = normalize_language_spec(definition_language)
     language_label = f"{language.name} ({language.code})"
     return f"""
-You are writing a learner's dictionary entry from curated Wiktionary data.
-The headword language may vary between entries.
-The required definition language for this run is {language_label}.
-Every generated natural-language field must be written in {language.name}.
-Follow the standard written register and orthography implied by the language tag `{language.code}`.
+You are writing a learner's dictionary entry in {language.name} from curated
+Wiktionary data ({language_label} is the required definition language; follow
+its standard register and orthography). Return exactly one JSON object and
+nothing else.
 
-Return exactly one JSON object and nothing else.
-
-You are only responsible for the generated explanatory fields.
-Do not repeat or invent deterministic structural fields such as forms, pronunciations, provenance, or relation tables.
-
-Your goal is a learnable entry, not a mechanical sense-by-sense translation of
-the source. A learner cannot memorize dozens of parallel senses; they need one
-thread to hold onto and a clear signal about which senses matter.
+Produce a learnable entry, not a sense-by-sense translation: the learner needs
+one memorable thread and a clear signal of which senses matter. You generate
+explanatory fields only — never structural data such as forms or pronunciations.
 
 The JSON object must contain:
-- headword_summary: non-empty learner-facing summary of the whole headword in {language.name}
-- memory_hook: one memorable thread in {language.name} that connects the headword's
-  main senses — the single mental image or core concept a learner should keep.
-  When senses radiate from one root idea, name that idea and show how the main
-  senses grow out of it. When they genuinely do not, give the clearest split
-  (for example "两条主线：河岸的岸 / 存钱的银行"). Never null.
-- study_notes: array of short study notes in {language.name}. Study notes are
-  entry-level learning strategy and pitfall reminders only (false friends,
-  meanings learners wrongly assume, ordering advice). Never repeat collocation,
-  register, or grammar information that belongs in a usage_note. Use [] when
-  there is nothing beyond the usage notes.
-- etymology_note: short note in {language.name} or null
-- pos_groups: array with exactly the same pos values as the input skeleton
-  - pos_group_id
-  - pos
-  - summary: non-empty summary for this part of speech in {language.name}
-  - usage_note: {language.name} string or null
-  - meanings: array with exactly the same sense_id values as the input skeleton
-    - sense_id
-    - priority: exactly one of "core", "common", "rare"
-    - short_gloss: short cue string in {language.name} or null
-    - learner_explanation: natural-language explanation in {language.name}
-    - usage_note: {language.name} string or null
-    - examples: array of {{"text", "translation"}} objects
+- headword_summary: non-empty summary of the whole headword
+- memory_hook: one memorable thread in {language.name} connecting the main
+  senses, never null. Express the single mental image or core concept in
+  natural {language.name} words and show how the main senses grow out of it;
+  when the senses genuinely split, give the clearest split.
+- study_notes: entry-level learning-strategy and pitfall reminders only
+  (false friends, meanings learners wrongly assume, learning order). Never
+  repeat collocation, register, or grammar content that belongs in a
+  usage_note. Use [] when there is nothing beyond the usage notes.
+- etymology_note: short note or null
+- pos_groups: exactly the groups of the input skeleton, each containing:
+  - pos_group_id and pos: copied verbatim from the input, never translated
+    (write "verb", not a translation of it)
+  - summary: non-empty summary of this part of speech
+  - usage_note: string or null
+  - meanings: exactly the sense_id values of the input skeleton, each with:
+    - sense_id: copied verbatim
+    - priority: "core", "common", or "rare". core = the few senses that carry
+      the memory hook, usually 1-3 in the whole entry; common = genuinely
+      useful in ordinary reading and conversation; rare = technical, archaic,
+      dialectal, or marginal (clients may hide rare senses — never mark a
+      sense rare merely because it is hard to explain).
+    - short_gloss: short cue string or null
+    - learner_explanation: plain {language.name} explanation anchored to the
+      memory hook where possible. core and common senses must stand alone;
+      rare senses may be one tight sentence pointing back to the core idea.
+      Never copy the source gloss mechanically and never invent facts.
+    - usage_note: answers "how do I use it", never restates the meaning. Open
+      with a concrete sentence pattern or collocation template, then cover
+      register, grammar traps, and mistakes {language.name} speakers typically
+      make. 2-4 substantial sentences, otherwise null.
+    - examples: core senses need 1-2, common exactly 1, rare []. Each item is
+      {{"text": one natural everyday sentence in the headword language showing
+      the typical pattern, "translation": its natural {language.name}
+      rendering}}. Write fresh sentences; never copy source quotations.
 
-How to assign priority:
-- "core": the senses a learner must know first — the ones that carry the memory
-  hook. Be strict: usually 1 to 3 senses across the whole entry, only more when
-  the headword genuinely has more independent everyday meanings.
-- "common": genuinely useful in ordinary reading and conversation, learned after
-  the core senses.
-- "rare": technical, archaic, dialectal, or marginal senses. Clients may hide
-  these by default, so never mark a sense "rare" merely because it is hard to
-  explain.
-
-How to write learner_explanation:
-- explain the sense in plain {language.name}, anchored to the memory hook where
-  possible, so related senses read as extensions of one idea rather than
-  isolated definitions
-- for "core" and "common" senses, be concrete enough to stand alone
-- for "rare" senses, one tight sentence is enough; point back to the core idea
-  when that helps ("由『打结』引申的航海用法")
-- never copy the source gloss mechanically, and never invent facts; when
-  uncertain, stay conservative
-
-How to write examples:
-- "core" senses must have 1-2 examples; "common" senses must have exactly 1;
-  "rare" senses get an empty array
-- "text" is one natural, everyday sentence in the headword language that shows
-  the sense's typical collocation or sentence pattern — the kind of sentence a
-  learner could reuse. Keep it short and self-contained.
-- "translation" renders that sentence in {language.name}, natural rather than
-  word-for-word
-- write fresh sentences; do not copy quotations from the source payload
-
-How to write usage_note (both the sense level and the pos-group level):
-- a usage_note answers "how do I use it", never "what does it mean" — do not
-  restate or paraphrase the learner_explanation
-- when present, open with a concrete sentence pattern or collocation template
-  (for example "give up doing sth，而不是 give up to do sth"), then cover
-  register (口语/书面/正式), grammar traps, and the mistakes speakers of
-  {language.name} typically make (false friends, easily-confused words)
-- write 2-4 full sentences with real substance, not a vague label like
-  "常用于口语"
-- only include one when you have something concrete beyond the explanation;
-  otherwise use null
-
-Hard requirements:
-- copy pos_group_id, pos, and sense_id values verbatim from the input, in
-  their original language and spelling; never translate them (write "verb",
-  not a translation of it)
-- do not invent or rename pos values
-- do not invent or rename pos_group_id values
-- do not invent or rename sense_id values
-- do not omit any pos group from the input
-- do not omit any sense_id from the input
-- short_gloss is only a helper field; learner_explanation is the main field
-- if the headword language and definition language happen to be the same, still paraphrase the curated source instead of copying it mechanically
-- output valid JSON only
-
-Required output shape:
-{{
-  "headword_summary": "<non-empty summary in {language.name}>",
-  "memory_hook": "<one memorable thread in {language.name}, never null>",
-  "study_notes": ["<short study note in {language.name}>"],
-  "etymology_note": "<short etymology note in {language.name} or null>",
-  "pos_groups": [
-    {{
-      "pos_group_id": "<exactly copied from input>",
-      "pos": "<exactly copied from input>",
-      "summary": "<non-empty part-of-speech summary in {language.name}>",
-      "usage_note": "<usage note in {language.name} or null>",
-      "meanings": [
-        {{
-          "sense_id": "<exactly copied from input>",
-          "priority": "<core | common | rare>",
-          "short_gloss": "<short cue in {language.name} or null>",
-          "learner_explanation": "<explanation in {language.name}>",
-          "usage_note": "<usage note in {language.name} or null>",
-          "examples": [
-            {{
-              "text": "<one everyday sentence in the headword language>",
-              "translation": "<its {language.name} translation>"
-            }}
-          ]
-        }}
-      ]
-    }}
-  ]
-}}
+Every natural-language field must be in {language.name}, written as natural
+prose: never mix stray headword-language words into it (the headword itself,
+quoted patterns, and technical terms are the only exceptions). Do not add,
+omit, rename, or translate any pos_group_id, pos, or sense_id. When uncertain,
+stay conservative. Output valid JSON only.
 """.strip()
 
 
@@ -289,6 +214,10 @@ Follow the standard written register and orthography implied by the language tag
 Return exactly one JSON object and nothing else.
 
 The JSON object must contain exactly these keys:
+- core_senses: array of 1-4 objects {{"pos_group_id", "sense_id"}} copied
+  verbatim from the digest — the entry's most essential everyday senses, the
+  ones a learner must know first. sense_id values repeat across groups, so
+  always give the pair. Pick with the whole entry in view and be strict.
 - headword_summary: non-empty learner-facing summary of the whole headword in {language.name}
 - memory_hook: one memorable thread in {language.name} that connects the headword's
   main senses — the single mental image or core concept a learner should keep.
@@ -302,6 +231,8 @@ The JSON object must contain exactly these keys:
 - etymology_note: short note in {language.name} or null
 
 Requirements:
+- write natural {language.name} prose; never mix stray headword-language
+  words into it (the headword itself and quoted terms are the exceptions)
 - never invent facts; stay conservative when the digest is thin
 - output valid JSON only
 """.strip()
@@ -310,73 +241,47 @@ Requirements:
 def build_chunk_system_prompt(definition_language: LanguageSpec | dict[str, Any]) -> str:
     language = normalize_language_spec(definition_language)
     return f"""
-You are writing one part of a large learner's dictionary entry.
-The entry-level fields (summary and memory hook) were already generated and
-are included in the input as entry_context; anchor your explanations to that
-memory hook so the whole entry reads as one coherent piece.
-Every generated natural-language field must be written in {language.name}.
-Follow the standard written register and orthography implied by the language tag `{language.code}`.
+You are writing one part of a large learner's dictionary entry in
+{language.name} (follow the standard register and orthography of
+`{language.code}`). The entry-level summary and memory hook were generated
+separately and appear in the input as entry_context: anchor your explanations
+to that memory hook so the whole entry reads as one coherent piece. Return
+exactly one JSON object and nothing else.
 
-Return exactly one JSON object and nothing else.
+The JSON object must contain exactly one key, pos_groups: exactly the groups
+of the input skeleton, each containing:
+- pos_group_id and pos: copied verbatim from the input, never translated
+  (write "verb", not a translation of it)
+- summary: non-empty summary of this part of speech as a whole, even when the
+  input contains only part of its senses
+- usage_note: string or null
+- meanings: exactly the sense_id values of the input skeleton, each with:
+  - sense_id: copied verbatim
+  - priority: "core", "common", or "rare". The entry-wide core senses were
+    already chosen with full visibility and appear in
+    entry_context.core_senses as {{"pos_group_id", "sense_id"}} pairs: mark
+    exactly those senses core (the ones present in this part) and never mark
+    any other sense core. For the rest, common = genuinely useful in ordinary
+    usage; rare = technical, archaic, dialectal, or marginal (never mark a
+    sense rare merely because it is hard to explain).
+  - short_gloss: short cue string or null
+  - learner_explanation: plain {language.name} explanation anchored to the
+    entry_context memory hook where possible; core and common senses must
+    stand alone, rare senses may be one tight sentence. Never copy the source
+    gloss mechanically and never invent facts.
+  - usage_note: answers "how do I use it", never restates the meaning. Open
+    with a concrete pattern or collocation template, then register, grammar
+    traps, and typical mistakes; 2-4 substantial sentences, otherwise null.
+  - examples: core senses need 1-2, common exactly 1, rare []. Each item is
+    {{"text": one natural everyday sentence in the headword language,
+    "translation": its natural {language.name} rendering}}. Write fresh
+    sentences; never copy source quotations.
 
-The JSON object must contain exactly one key:
-- pos_groups: array with exactly the same pos values as the input skeleton
-  - pos_group_id
-  - pos
-  - summary: non-empty summary for this part of speech in {language.name}.
-    When the input contains only part of a group's senses, still summarize the
-    part of speech as a whole.
-  - usage_note: {language.name} string or null
-  - meanings: array with exactly the same sense_id values as the input skeleton
-    - sense_id
-    - priority: exactly one of "core", "common", "rare"
-    - short_gloss: short cue string in {language.name} or null
-    - learner_explanation: natural-language explanation in {language.name}
-    - usage_note: {language.name} string or null
-    - examples: array of {{"text", "translation"}} objects
-
-How to assign priority:
-- "core": the senses that carry the entry's memory hook. Be strict: at most a
-  few in the whole entry, so mark a sense "core" only when it clearly belongs
-  to the everyday heart of the word.
-- "common": genuinely useful in ordinary reading and conversation.
-- "rare": technical, archaic, dialectal, or marginal senses. Clients may hide
-  these by default, so never mark a sense "rare" merely because it is hard to
-  explain.
-
-How to write learner_explanation:
-- explain the sense in plain {language.name}, anchored to the entry_context
-  memory hook where possible
-- for "core" and "common" senses, be concrete enough to stand alone
-- for "rare" senses, one tight sentence is enough
-- never copy the source gloss mechanically, and never invent facts
-
-How to write examples:
-- "core" senses must have 1-2 examples; "common" senses must have exactly 1;
-  "rare" senses get an empty array
-- "text" is one natural, everyday sentence in the headword language showing
-  the sense's typical collocation or pattern; "translation" renders it in
-  {language.name}, natural rather than word-for-word
-- write fresh sentences; do not copy quotations from the source payload
-
-How to write usage_note (both the sense level and the pos-group level):
-- a usage_note answers "how do I use it", never "what does it mean" — do not
-  restate or paraphrase the learner_explanation
-- when present, open with a concrete sentence pattern or collocation template,
-  then cover register, grammar traps, and the mistakes speakers of
-  {language.name} typically make
-- write 2-4 full sentences with real substance; otherwise use null
-
-Hard requirements:
-- copy pos_group_id, pos, and sense_id values verbatim from the input, in
-  their original language and spelling; never translate them (write "verb",
-  not a translation of it)
-- do not invent or rename pos values
-- do not invent or rename pos_group_id values
-- do not invent or rename sense_id values
-- do not omit any pos group from the input
-- do not omit any sense_id from the input
-- output valid JSON only
+Every natural-language field must be in {language.name}, written as natural
+prose: never mix stray headword-language words into it (the headword itself,
+quoted patterns, and technical terms are the only exceptions). Do not add,
+omit, rename, or translate any pos_group_id, pos, or sense_id. Output valid
+JSON only.
 """.strip()
 
 
@@ -428,25 +333,21 @@ def build_generation_source_payload(
         etymology_id = group.get("etymology_id")
         senses = []
         for sense in group.get("senses", []):
-            senses.append(
-                {
-                    "sense_id": sense.get("sense_id"),
-                    "gloss": sense.get("gloss"),
-                    "raw_gloss": sense.get("raw_gloss"),
-                    "qualifier": sense.get("qualifier"),
-                    "labels": sense.get("tags") or [],
-                    "topics": sense.get("topics") or [],
-                    "examples": [
-                        {
-                            "text": example.get("text"),
-                            "translation": example.get("translation"),
-                            "type": example.get("type"),
-                            "ref": example.get("ref"),
-                        }
-                        for example in sense.get("examples", [])
-                    ],
-                }
-            )
+            source_examples = sense.get("examples") or []
+            first_example_text = None
+            for example in source_examples:
+                if example.get("text"):
+                    first_example_text = example["text"]
+                    break
+            sense_fields = {
+                "sense_id": sense.get("sense_id"),
+                "gloss": sense.get("gloss"),
+                "qualifier": sense.get("qualifier"),
+                "labels": sense.get("tags") or None,
+                "topics": sense.get("topics") or None,
+                "source_example": first_example_text,
+            }
+            senses.append({key: value for key, value in sense_fields.items() if value is not None})
         pos_groups.append(
             {
                 "pos_group_id": build_pos_group_id(pos=pos, etymology_id=etymology_id),
@@ -505,7 +406,7 @@ def build_user_prompt(entry_payload: dict[str, Any]) -> str:
     # text never mentions json, and some relays only check the user turn.
     return (
         "Generated-field source payload (JSON):\n"
-        + json.dumps(entry_payload, ensure_ascii=False, indent=2, sort_keys=True)
+        + json.dumps(entry_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     )
 
 
@@ -517,11 +418,12 @@ def build_overview_digest(entry_source_payload: dict[str, Any]) -> dict[str, Any
         "etymologies": entry_source_payload.get("etymologies") or [],
         "pos_groups": [
             {
+                "pos_group_id": group.get("pos_group_id"),
                 "pos": group.get("pos"),
-                "glosses": [
-                    meaning.get("gloss")
+                "senses": [
+                    {"sense_id": meaning.get("sense_id"), "gloss": meaning.get("gloss")}
                     for meaning in group.get("meanings", [])
-                    if meaning.get("gloss")
+                    if meaning.get("sense_id")
                 ],
             }
             for group in entry_source_payload.get("pos_groups", [])
@@ -532,14 +434,14 @@ def build_overview_digest(entry_source_payload: dict[str, Any]) -> dict[str, Any
 def build_overview_user_prompt(digest: dict[str, Any]) -> str:
     return (
         "Entry digest for the entry-level fields (JSON):\n"
-        + json.dumps(digest, ensure_ascii=False, indent=2, sort_keys=True)
+        + json.dumps(digest, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     )
 
 
 def build_chunk_user_prompt(chunk_payload: dict[str, Any]) -> str:
     return (
         "Partial-entry source payload (JSON):\n"
-        + json.dumps(chunk_payload, ensure_ascii=False, indent=2, sort_keys=True)
+        + json.dumps(chunk_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     )
 
 

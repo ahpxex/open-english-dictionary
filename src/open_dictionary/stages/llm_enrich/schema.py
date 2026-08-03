@@ -56,7 +56,11 @@ def validate_enrichment_payload(
     return payload
 
 
-def validate_overview_payload(payload: dict[str, Any]) -> dict[str, Any]:
+def validate_overview_payload(
+    payload: dict[str, Any],
+    *,
+    valid_sense_keys: set[tuple[str, str]],
+) -> dict[str, Any]:
     """Validate the entry-level fields produced by a sharded overview call."""
     if not isinstance(payload, dict):
         raise ValueError("LLM overview payload must be a JSON object")
@@ -66,7 +70,7 @@ def validate_overview_payload(payload: dict[str, Any]) -> dict[str, Any]:
             "LLM payload contains U+FFFD replacement characters (corrupted model output)"
         )
 
-    required = {"headword_summary", "memory_hook", "study_notes", "etymology_note"}
+    required = {"core_senses", "headword_summary", "memory_hook", "study_notes", "etymology_note"}
     missing = required - payload.keys()
     if missing:
         raise ValueError(f"LLM overview payload is missing required keys: {sorted(missing)}")
@@ -79,7 +83,30 @@ def validate_overview_payload(payload: dict[str, Any]) -> dict[str, Any]:
         payload["study_notes"] = []
     payload["study_notes"] = _normalize_string_list(payload["study_notes"], field_name="study_notes")
     payload["etymology_note"] = _normalize_optional_text(payload["etymology_note"], field_name="etymology_note")
+
+    raw_core = payload["core_senses"]
+    if not isinstance(raw_core, list):
+        raise ValueError("core_senses must be an array")
+    core_senses: list[dict[str, str]] = []
+    seen_keys: set[tuple[str, str]] = set()
+    for item in raw_core:
+        if not isinstance(item, dict):
+            raise ValueError("Each core_senses item must be an object")
+        pos_group_id = str(item.get("pos_group_id") or "").strip()
+        sense_id = str(item.get("sense_id") or "").strip()
+        if not pos_group_id or not sense_id:
+            raise ValueError("core_senses items need non-empty pos_group_id and sense_id")
+        key = (pos_group_id, sense_id)
+        if key not in valid_sense_keys:
+            raise ValueError(f"core_senses contains unknown sense: {pos_group_id}/{sense_id}")
+        if key not in seen_keys:
+            seen_keys.add(key)
+            core_senses.append({"pos_group_id": pos_group_id, "sense_id": sense_id})
+    if not 1 <= len(core_senses) <= 5:
+        raise ValueError("core_senses must contain between 1 and 5 senses")
+
     return {
+        "core_senses": core_senses,
         "headword_summary": payload["headword_summary"],
         "memory_hook": payload["memory_hook"],
         "study_notes": payload["study_notes"],
@@ -134,10 +161,10 @@ def _validate_pos_groups(
         expected_group = expected_pos_group_index.get(pos_group_id)
         if expected_group is None:
             raise ValueError(f"LLM payload contains unexpected pos_group_id: {pos_group_id}")
-        if pos.casefold() != expected_group["pos"].strip().casefold():
-            raise ValueError(
-                f"LLM payload pos mismatch for pos_group_id {pos_group_id}: expected {expected_group['pos']}, got {pos}"
-            )
+        # pos is a redundant echo of the group identity; alignment is carried
+        # by pos_group_id, so a drifted echo (e.g. a translated pos) is
+        # normalized back to the skeleton value instead of failing the call.
+        item["pos"] = expected_group["pos"]
 
         if not isinstance(item["summary"], str) or not item["summary"].strip():
             raise ValueError("pos_groups.summary must be a non-empty string")
