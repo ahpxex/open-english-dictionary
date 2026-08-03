@@ -14,6 +14,14 @@ def current_user() -> str:
     return os.environ.get("USER", "postgres")
 
 
+@pytest.fixture(autouse=True)
+def isolated_llm_provider_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Provider-pool variables from the developer's real environment must not
+    # leak into tests that configure the legacy single-provider variables.
+    monkeypatch.delenv("LLM_PROVIDERS", raising=False)
+    monkeypatch.delenv("LLM_RPM", raising=False)
+
+
 def admin_dsn() -> str:
     return f"postgresql://{current_user()}@localhost:5432/postgres"
 

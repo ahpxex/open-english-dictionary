@@ -343,6 +343,15 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
             """,
         ),
     ),
+    Migration(
+        version="20260802_llm_generation_metadata_v5",
+        statements=(
+            """
+            ALTER TABLE llm.entry_enrichments
+            ADD COLUMN IF NOT EXISTS generation_metadata JSONB NOT NULL DEFAULT '{}'::jsonb
+            """,
+        ),
+    ),
 )
 
 
