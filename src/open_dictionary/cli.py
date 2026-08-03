@@ -28,6 +28,7 @@ from .stages.curated_build import (
     run_curated_build_stage,
 )
 from .stages.curated_build.word_selection import build_word_selection_rule
+from .qa.audit import audit_definitions
 from .stages.export_distribution_jsonl import (
     DISTRIBUTION_SCHEMA_VERSION,
     EXPORT_DISTRIBUTION_JSONL_STAGE,
@@ -300,6 +301,23 @@ def _cmd_curated_build(args: argparse.Namespace) -> int:
             word_selection.as_metadata() if word_selection is not None else None
         ),
     )
+    return 0
+
+
+def _cmd_audit_definitions(args: argparse.Namespace) -> int:
+    settings = _get_settings(args)
+    try:
+        report = audit_definitions(
+            settings,
+            llm_table=args.definitions_table,
+            prompt_version_like=args.prompt_version_like,
+            bucket_size=args.bucket_size,
+            sample_size=args.sample_size,
+        )
+    except (psycopg.Error, ValueError) as exc:
+        args._parser.error(str(exc))
+
+    print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0
 
 
@@ -990,6 +1008,35 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_word_selection_options(curated_build_parser)
     _add_database_options(curated_build_parser)
     curated_build_parser.set_defaults(func=_cmd_curated_build, _parser=curated_build_parser)
+
+    audit_parser = subparsers.add_parser(
+        "audit-definitions",
+        help="Advisory quality report over generated definitions (read-only).",
+    )
+    audit_parser.add_argument(
+        "--definitions-table",
+        default="llm.entry_enrichments",
+        help="Generated-definitions table to audit (default: %(default)s).",
+    )
+    audit_parser.add_argument(
+        "--prompt-version-like",
+        default="%",
+        help="SQL LIKE filter on prompt_version (default: all).",
+    )
+    audit_parser.add_argument(
+        "--bucket-size",
+        type=int,
+        default=1000,
+        help="Rows per health bucket keyed by enrichment_id (default: %(default)s).",
+    )
+    audit_parser.add_argument(
+        "--sample-size",
+        type=int,
+        default=200,
+        help="Random succeeded rows to run content heuristics over (default: %(default)s).",
+    )
+    _add_database_options(audit_parser)
+    audit_parser.set_defaults(func=_cmd_audit_definitions, _parser=audit_parser)
 
     llm_enrich_parser = subparsers.add_parser(
         "generate-definitions",

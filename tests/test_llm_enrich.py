@@ -1360,3 +1360,28 @@ def test_validate_pos_groups_normalizes_translated_pos_echo() -> None:
     )
 
     assert validated["pos_groups"][0]["pos"] == "noun"
+
+
+def test_audit_response_payload_flags_soft_quality_issues() -> None:
+    # This case pins the advisory heuristics used for batch review during
+    # long generation runs.
+    from open_dictionary.qa.audit import audit_response_payload
+
+    payload = valid_payload("noun", sense_ids=["s1", "s2"])
+    meanings = payload["pos_groups"][0]["meanings"]
+    for m in meanings:
+        m["priority"] = "common"
+    meanings[0]["examples"] = []
+    meanings[1]["learner_explanation"] = "短。"
+    meanings[1]["usage_note"] = "表示这个词的意思是另一种说法。"
+
+    checks = {f["check"] for f in audit_response_payload(payload)}
+    assert "missing_example" in checks
+    assert "short_explanation" in checks
+    assert "restate_style_usage_note" in checks
+
+
+def test_audit_response_payload_accepts_clean_payload() -> None:
+    from open_dictionary.qa.audit import audit_response_payload
+
+    assert audit_response_payload(valid_payload("noun")) == []
