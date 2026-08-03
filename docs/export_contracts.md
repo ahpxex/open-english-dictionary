@@ -96,7 +96,10 @@ Every meaning row should have:
 
 - required `sense_id` traceable to the curated source sense
 - required `priority`, exactly one of `core`, `common`, `rare`; clients may
-  hide `rare` meanings by default
+  hide `rare` meanings by default. Priorities are truthful: a genuinely
+  obscure headword may consist entirely of `rare` senses, so clients that
+  filter by priority MUST fall back to showing all senses whenever the
+  filter would leave an entry empty.
 - optional `short_gloss` for compact indexing or quick scanning
 - required `learner_explanation` as the main definition-language explanation
 - optional `usage_note`
