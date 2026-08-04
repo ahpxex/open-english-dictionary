@@ -209,6 +209,10 @@ def write_distribution_sqlite_atomic(
         _initialize_distribution_sqlite(connection)
 
         for record in records:
+            if record.get("skipped_unenriched") is not None:
+                # Trailing accounting marker from iter_distribution_records;
+                # unenriched entries are excluded from the artifact.
+                continue
             processed_records += 1
             curated_run_id = record.get("curated_run_id")
             if curated_run_id:

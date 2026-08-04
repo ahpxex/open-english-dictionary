@@ -77,6 +77,10 @@ def run_export_distribution_jsonl_stage(
                 progress_callback=progress_callback,
             )
         )
+        skipped_unenriched = sum(
+            record.get("skipped_unenriched") or 0 for record in records
+        )
+        records = [record for record in records if record.get("skipped_unenriched") is None]
         documents = [record["document"] for record in records if record["document"] is not None]
         skipped_entries_without_meanings = sum(1 for record in records if record["document"] is None)
         output_sha256 = write_jsonl_atomic(output_path, documents)
@@ -121,6 +125,7 @@ def run_export_distribution_jsonl_stage(
                     "curated_run_ids": curated_run_ids,
                     "definition_run_ids": llm_run_ids,
                     "skipped_entries_without_meanings": skipped_entries_without_meanings,
+                    "skipped_unenriched": skipped_unenriched,
                 },
             )
             complete_run(
@@ -135,6 +140,7 @@ def run_export_distribution_jsonl_stage(
                     "schema_version": DISTRIBUTION_SCHEMA_VERSION,
                     "definition_language": language.as_dict(),
                     "skipped_entries_without_meanings": skipped_entries_without_meanings,
+                    "skipped_unenriched": skipped_unenriched,
                 },
             )
 
@@ -168,6 +174,7 @@ def iter_distribution_records(
     reporter = ThrottledProgressReporter(progress_callback, stage=EXPORT_DISTRIBUTION_JSONL_STAGE)
     processed = 0
     exported = 0
+    skipped_unenriched = 0
     for curated_run_id, entry_id, _lang_code, _normalized_word, _word, curated_payload in iter_curated_rows(
         settings=settings,
         curated_table=curated_table,
@@ -179,10 +186,12 @@ def iter_distribution_records(
             candidates=candidates,
         )
         if current_enrichment is None:
-            raise ValueError(
-                "No succeeded enrichment matches the current curated payload for "
-                f"entry_id {entry_id} and prompt_version {prompt_bundle.resolved_prompt_version}"
-            )
+            # Entries without a matching enrichment (persistent generation
+            # failures) are excluded from the distribution artifact and
+            # counted explicitly; they remain queued for future passes.
+            processed += 1
+            skipped_unenriched += 1
+            continue
         if (
             current_enrichment["definition_language_code"] != prompt_bundle.definition_language.code
             or (current_enrichment["definition_language_name"] or "").strip()
@@ -212,12 +221,20 @@ def iter_distribution_records(
             "curated_run_id": str(curated_run_id) if curated_run_id is not None else None,
             "llm_run_id": current_enrichment["run_id"],
             "document": document,
+            "skipped_unenriched": None,
         }
+    yield {
+        "curated_run_id": None,
+        "llm_run_id": None,
+        "document": None,
+        "skipped_unenriched": skipped_unenriched,
+    }
     reporter.report(
         event="export_progress",
         force=True,
         processed_entries=processed,
         exported_entries=exported,
+        skipped_unenriched=skipped_unenriched,
     )
 
 

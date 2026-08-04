@@ -519,7 +519,7 @@ def test_run_export_distribution_jsonl_stage_selects_requested_definition_langua
     assert rows[0]["headword_summary"] == "English overall summary."
 
 
-def test_distribution_export_rejects_stale_enrichment_payloads(
+def test_distribution_export_excludes_stale_enrichment_payloads(
     temp_database_url: str,
     tmp_path: Path,
 ) -> None:
@@ -558,8 +558,75 @@ def test_distribution_export_rejects_stale_enrichment_payloads(
         )
         conn.commit()
 
-    with pytest.raises(ValueError, match="No succeeded enrichment matches the current curated payload"):
-        distribution_stage.run_export_distribution_jsonl_stage(
-            settings=settings,
-            output_path=output,
+    result = distribution_stage.run_export_distribution_jsonl_stage(
+        settings=settings,
+        output_path=output,
+    )
+
+    # A stale enrichment no longer matches the current curated payload, so the
+    # entry is excluded from the artifact and counted, never silently exported.
+    assert result.entry_count == 0
+    with get_connection(settings) as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "select metadata->>'skipped_unenriched' from export.artifacts where run_id = %s",
+                (result.run_id,),
+            )
+            assert cursor.fetchone()[0] == "1"
+
+
+def test_distribution_export_skips_unenriched_entries_with_accounting(
+    temp_database_url: str,
+    tmp_path: Path,
+) -> None:
+    # Persistent generation failures must not block the artifact: entries
+    # without a matching enrichment are excluded and counted explicitly.
+    settings = RuntimeSettings(database_url=temp_database_url)
+    with get_connection(settings) as conn:
+        apply_foundation(conn)
+        enriched_id = seed_curated_entry(conn, word="alpha")
+        seed_curated_entry(conn, word="beta")
+        seed_llm_enrichment(
+            conn,
+            entry_id=enriched_id,
+            payload={
+                "headword_summary": "整体说明。",
+                "memory_hook": "一句帮助记忆的主线。",
+                "study_notes": [],
+                "etymology_note": None,
+                "pos_groups": [
+                    {
+                        "pos_group_id": build_pos_group_id(pos="adj", etymology_id="et1"),
+                        "pos": "adj",
+                        "summary": "形容词整体说明。",
+                        "usage_note": None,
+                        "meanings": [
+                            {
+                                "sense_id": "s1",
+                                "priority": "core",
+                                "short_gloss": None,
+                                "learner_explanation": "详细解释。",
+                                "usage_note": None,
+                            }
+                        ],
+                    }
+                ],
+            },
         )
+        conn.commit()
+
+    output = tmp_path / "distribution.jsonl"
+    result = distribution_stage.run_export_distribution_jsonl_stage(
+        settings=settings,
+        output_path=output,
+    )
+
+    assert result.entry_count == 1
+    with get_connection(settings) as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "select metadata->>'skipped_unenriched' from export.artifacts where run_id = %s",
+                (result.run_id,),
+            )
+            skipped = cursor.fetchone()[0]
+    assert skipped == "1"
