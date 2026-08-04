@@ -9,7 +9,7 @@ from typing import Any
 from open_dictionary.contracts import DEFAULT_DEFINITION_LANGUAGE, LanguageSpec, normalize_language_spec
 
 
-PROMPT_VERSION = "curated_v1_distribution_fields_v13"
+PROMPT_VERSION = "curated_v1_distribution_fields_v14"
 # Generous ceilings: sharding keeps every call at or below the chunk budget,
 # so these are safety nets rather than working limits. A tight cap truncates
 # mid-JSON and needlessly demotes entries to the compact fallback.
@@ -131,7 +131,9 @@ The JSON object must contain:
       the memory hook, usually 1-3 in the whole entry; common = genuinely
       useful in ordinary reading and conversation; rare = technical, archaic,
       dialectal, or marginal (clients may hide rare senses — never mark a
-      sense rare merely because it is hard to explain).
+      sense rare merely because it is hard to explain). Sexual or otherwise
+      adult-oriented senses must always be marked "rare" regardless of
+      frequency, with explanations kept in a neutral, clinical register.
     - short_gloss: short cue string or null
     - learner_explanation: plain {language.name} explanation anchored to the
       memory hook where possible. core and common senses must stand alone;
@@ -144,7 +146,12 @@ The JSON object must contain:
     - examples: core senses need 1-2, common exactly 1, rare []. Each item is
       {{"text": one natural everyday sentence in the headword language showing
       the typical pattern, "translation": its natural {language.name}
-      rendering}}. Write fresh sentences; never copy source quotations.
+      rendering}}. Write fresh sentences; never copy source quotations. When
+      the sense is an inflected form of another expression (the gloss reads
+      like "plural of …" or "third-person singular … of …"), the example must
+      stay natural, grammatical English using that underlying expression —
+      reorder a multi-word headword when natural usage requires it (write
+      "She votes early", never "She early votes").
 
 Every natural-language field must be in {language.name}, written as natural
 prose: never mix stray headword-language words into it (the headword itself,
@@ -263,7 +270,9 @@ of the input skeleton, each containing:
     exactly those senses core (the ones present in this part) and never mark
     any other sense core. For the rest, common = genuinely useful in ordinary
     usage; rare = technical, archaic, dialectal, or marginal (never mark a
-    sense rare merely because it is hard to explain).
+    sense rare merely because it is hard to explain). Sexual or otherwise
+    adult-oriented senses must always be marked "rare" regardless of
+    frequency, with explanations kept in a neutral, clinical register.
   - short_gloss: short cue string or null
   - learner_explanation: plain {language.name} explanation anchored to the
     entry_context memory hook where possible; core and common senses must
@@ -275,7 +284,10 @@ of the input skeleton, each containing:
   - examples: core senses need 1-2, common exactly 1, rare []. Each item is
     {{"text": one natural everyday sentence in the headword language,
     "translation": its natural {language.name} rendering}}. Write fresh
-    sentences; never copy source quotations.
+    sentences; never copy source quotations. For inflected-form senses the
+    example must stay natural, grammatical English — reorder a multi-word
+    headword when natural usage requires it (write "She votes early", never
+    "She early votes").
 
 Every natural-language field must be in {language.name}, written as natural
 prose: never mix stray headword-language words into it (the headword itself,

@@ -326,7 +326,14 @@ def _cmd_review_definitions(args: argparse.Namespace) -> int:
     except (psycopg.Error, ValueError, RuntimeError) as exc:
         args._parser.error(str(exc))
 
-    report = _summarize_reviews(settings, review_table=args.review_table, seed=args.seed)
+    from .qa.judge import REVIEW_PROMPT_VERSION as _review_prompt_version
+
+    report = _summarize_reviews(
+        settings,
+        review_table=args.review_table,
+        seed=args.seed,
+        review_prompt_version=_review_prompt_version,
+    )
     _print_command_result(
         "review-definitions",
         stage=QUALITY_REVIEW_STAGE,
@@ -340,7 +347,7 @@ def _cmd_review_definitions(args: argparse.Namespace) -> int:
     return 0
 
 
-def _summarize_reviews(settings, *, review_table: str, seed: str) -> dict:
+def _summarize_reviews(settings, *, review_table: str, seed: str, review_prompt_version: str) -> dict:
     review_identifier = _identifier_from_dotted(review_table)
     with get_connection(settings) as conn:
         with conn.cursor() as cursor:
@@ -354,10 +361,11 @@ def _summarize_reviews(settings, *, review_table: str, seed: str) -> dict:
                            avg((scores->>'examples')::int)
                     FROM {}
                     WHERE status = 'succeeded' AND sample_seed = %s
+                      AND review_prompt_version = %s
                     GROUP BY verdict
                     """
                 ).format(review_identifier),
-                (seed,),
+                (seed, review_prompt_version),
             )
             verdict_rows = cursor.fetchall()
             cursor.execute(
@@ -366,10 +374,11 @@ def _summarize_reviews(settings, *, review_table: str, seed: str) -> dict:
                     SELECT issue->>'kind', count(*)
                     FROM {}, jsonb_array_elements(issues) issue
                     WHERE status = 'succeeded' AND sample_seed = %s
+                      AND review_prompt_version = %s
                     GROUP BY 1 ORDER BY 2 DESC
                     """
                 ).format(review_identifier),
-                (seed,),
+                (seed, review_prompt_version),
             )
             issue_rows = cursor.fetchall()
             cursor.execute(
@@ -380,10 +389,11 @@ def _summarize_reviews(settings, *, review_table: str, seed: str) -> dict:
                            count(*) FILTER (WHERE verdict = 'major_issues')
                     FROM {}
                     WHERE status = 'succeeded' AND sample_seed = %s
+                      AND review_prompt_version = %s
                     GROUP BY stratum ORDER BY 3 DESC, stratum
                     """
                 ).format(review_identifier),
-                (seed,),
+                (seed, review_prompt_version),
             )
             stratum_rows = cursor.fetchall()
 
@@ -512,10 +522,11 @@ def _cmd_export_distribution_jsonl(args: argparse.Namespace) -> int:
     settings = _get_settings(args)
     progress_callback = _make_progress_callback()
     definition_language = _get_definition_language(args)
-    prompt_bundle = build_prompt_bundle(
-        prompt_version=args.prompt_version,
-        definition_language=definition_language,
-    )
+    prompt_versions = args.prompt_version or [PROMPT_VERSION]
+    prompt_bundles = [
+        build_prompt_bundle(prompt_version=version, definition_language=definition_language)
+        for version in prompt_versions
+    ]
 
     try:
         result = run_export_distribution_jsonl_stage(
@@ -525,7 +536,7 @@ def _cmd_export_distribution_jsonl(args: argparse.Namespace) -> int:
             llm_table=args.llm_table,
             artifact_table=args.artifact_table,
             models=args.model,
-            prompt_version=args.prompt_version,
+            prompt_versions=args.prompt_version,
             definition_language=definition_language,
             progress_callback=progress_callback,
         )
@@ -540,8 +551,8 @@ def _cmd_export_distribution_jsonl(args: argparse.Namespace) -> int:
         entry_count=result.entry_count,
         output_path=str(result.output_path),
         output_sha256=result.output_sha256,
-        prompt_template_version=args.prompt_version,
-        prompt_version=prompt_bundle.resolved_prompt_version,
+        prompt_template_versions=prompt_versions,
+        prompt_versions=[bundle.resolved_prompt_version for bundle in prompt_bundles],
         definition_language=definition_language.as_dict(),
     )
     return 0
@@ -759,7 +770,7 @@ def _cmd_pipeline_run(args: argparse.Namespace) -> int:
                 llm_table=args.llm_table,
                 artifact_table=args.artifact_table,
                 models=export_models,
-                prompt_version=args.prompt_version,
+                prompt_versions=[args.prompt_version],
                 definition_language=definition_language,
                 parent_run_id=workflow_run_id,
                 progress_callback=progress_callback,
@@ -782,7 +793,7 @@ def _cmd_pipeline_run(args: argparse.Namespace) -> int:
                 llm_table=args.llm_table,
                 artifact_table=args.artifact_table,
                 models=export_models,
-                prompt_version=args.prompt_version,
+                prompt_versions=[args.prompt_version],
                 definition_language=definition_language,
                 parent_run_id=workflow_run_id,
                 progress_callback=progress_callback,
@@ -939,10 +950,11 @@ def _cmd_export_distribution_sqlite(args: argparse.Namespace) -> int:
     settings = _get_settings(args)
     progress_callback = _make_progress_callback()
     definition_language = _get_definition_language(args)
-    prompt_bundle = build_prompt_bundle(
-        prompt_version=args.prompt_version,
-        definition_language=definition_language,
-    )
+    prompt_versions = args.prompt_version or [PROMPT_VERSION]
+    prompt_bundles = [
+        build_prompt_bundle(prompt_version=version, definition_language=definition_language)
+        for version in prompt_versions
+    ]
 
     try:
         result = run_export_distribution_sqlite_stage(
@@ -952,7 +964,7 @@ def _cmd_export_distribution_sqlite(args: argparse.Namespace) -> int:
             llm_table=args.llm_table,
             artifact_table=args.artifact_table,
             models=args.model,
-            prompt_version=args.prompt_version,
+            prompt_versions=args.prompt_version,
             definition_language=definition_language,
             progress_callback=progress_callback,
         )
@@ -968,8 +980,8 @@ def _cmd_export_distribution_sqlite(args: argparse.Namespace) -> int:
         entry_count=result.entry_count,
         output_path=str(result.output_path),
         output_sha256=result.output_sha256,
-        prompt_template_version=args.prompt_version,
-        prompt_version=prompt_bundle.resolved_prompt_version,
+        prompt_template_versions=prompt_versions,
+        prompt_versions=[bundle.resolved_prompt_version for bundle in prompt_bundles],
         definition_language=definition_language.as_dict(),
     )
     return 0
@@ -1326,8 +1338,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     export_distribution_jsonl_parser.add_argument(
         "--prompt-version",
-        default=PROMPT_VERSION,
-        help="Prompt version required for distribution export (default: %(default)s).",
+        action="append",
+        help=(
+            "Prompt version accepted for distribution export; repeat to give a "
+            "preference order (first wins per entry). Defaults to the current "
+            f"prompt version {PROMPT_VERSION}."
+        ),
     )
     _add_definition_language_options(export_distribution_jsonl_parser)
     _add_database_options(export_distribution_jsonl_parser)
@@ -1372,8 +1388,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     export_distribution_sqlite_parser.add_argument(
         "--prompt-version",
-        default=PROMPT_VERSION,
-        help="Prompt version required for distribution export (default: %(default)s).",
+        action="append",
+        help=(
+            "Prompt version accepted for distribution export; repeat to give a "
+            "preference order (first wins per entry). Defaults to the current "
+            f"prompt version {PROMPT_VERSION}."
+        ),
     )
     _add_definition_language_options(export_distribution_sqlite_parser)
     _add_database_options(export_distribution_sqlite_parser)

@@ -253,7 +253,7 @@ Useful flags:
 ```bash
 uv run opend export-audit --include-unenriched
 uv run opend export-audit --model Qwen/Qwen3.5-35B-A3B-FP8 --model deepseek-v4-flash
-uv run opend export-audit --prompt-version curated_v1_distribution_fields_v13
+uv run opend export-audit --prompt-version curated_v1_distribution_fields_v14
 uv run opend export-audit --definition-language-code en --definition-language-name English
 ```
 
@@ -284,7 +284,7 @@ Useful flags:
 
 ```bash
 uv run opend export-distribution --model Qwen/Qwen3.5-35B-A3B-FP8
-uv run opend export-distribution --prompt-version curated_v1_distribution_fields_v13
+uv run opend export-distribution --prompt-version curated_v1_distribution_fields_v14
 uv run opend export-distribution --definition-language-code en --definition-language-name English
 ```
 
@@ -316,7 +316,7 @@ Useful flags:
 
 ```bash
 uv run opend export-distribution-sqlite --model Qwen/Qwen3.5-35B-A3B-FP8
-uv run opend export-distribution-sqlite --prompt-version curated_v1_distribution_fields_v13
+uv run opend export-distribution-sqlite --prompt-version curated_v1_distribution_fields_v14
 uv run opend export-distribution-sqlite --definition-language-code en --definition-language-name English
 ```
 

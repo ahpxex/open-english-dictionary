@@ -48,16 +48,18 @@ def run_export_distribution_sqlite_stage(
     llm_table: str = "llm.entry_enrichments",
     artifact_table: str = "export.artifacts",
     models: Sequence[str] | None = None,
-    prompt_version: str = PROMPT_VERSION,
+    prompt_versions: Sequence[str] | None = None,
     definition_language: LanguageSpec | dict[str, Any] = DEFAULT_DEFINITION_LANGUAGE,
     parent_run_id: UUID | None = None,
     progress_callback: ProgressCallback | None = None,
 ) -> ExportSQLiteResult:
     language = normalize_language_spec(definition_language)
-    prompt_bundle = build_prompt_bundle(
-        prompt_version=prompt_version,
-        definition_language=language,
-    )
+    versions = list(prompt_versions) if prompt_versions else [PROMPT_VERSION]
+    prompt_bundles = [
+        build_prompt_bundle(prompt_version=version, definition_language=language)
+        for version in versions
+    ]
+    prompt_bundle = prompt_bundles[0]
 
     with get_connection(settings) as conn:
         run_id = start_run(
@@ -69,8 +71,8 @@ def run_export_distribution_sqlite_stage(
                 "definitions_table": llm_table,
                 "artifact_table": artifact_table,
                 "models": list(models) if models else None,
-                "prompt_template_version": prompt_bundle.template_version,
-                "prompt_version": prompt_bundle.resolved_prompt_version,
+                "prompt_template_versions": [bundle.template_version for bundle in prompt_bundles],
+                "prompt_versions": [bundle.resolved_prompt_version for bundle in prompt_bundles],
                 "schema_version": DISTRIBUTION_SCHEMA_VERSION,
                 "sqlite_schema_version": SQLITE_SCHEMA_VERSION,
                 "artifact_role": "distribution",
@@ -96,7 +98,7 @@ def run_export_distribution_sqlite_stage(
                 curated_table=curated_table,
                 llm_table=llm_table,
                 models=models,
-                prompt_bundle=prompt_bundle,
+                prompt_bundles=prompt_bundles,
                 progress_callback=None,
             ),
             metadata={
@@ -105,8 +107,8 @@ def run_export_distribution_sqlite_stage(
                 "sqlite_schema_version": SQLITE_SCHEMA_VERSION,
                 "definition_language": language.as_dict(),
                 "models": list(models) if models else None,
-                "prompt_template_version": prompt_bundle.template_version,
-                "prompt_version": prompt_bundle.resolved_prompt_version,
+                "prompt_template_versions": [bundle.template_version for bundle in prompt_bundles],
+                "prompt_versions": [bundle.resolved_prompt_version for bundle in prompt_bundles],
             },
             progress_callback=progress_callback,
         )
@@ -141,8 +143,8 @@ def run_export_distribution_sqlite_stage(
                     "curated_table": curated_table,
                     "definitions_table": llm_table,
                     "models": list(models) if models else None,
-                    "prompt_template_version": prompt_bundle.template_version,
-                    "prompt_version": prompt_bundle.resolved_prompt_version,
+                    "prompt_template_versions": [bundle.template_version for bundle in prompt_bundles],
+                    "prompt_versions": [bundle.resolved_prompt_version for bundle in prompt_bundles],
                     "schema_version": DISTRIBUTION_SCHEMA_VERSION,
                     "sqlite_schema_version": SQLITE_SCHEMA_VERSION,
                     "artifact_role": "distribution",

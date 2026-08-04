@@ -27,16 +27,18 @@ def run_export_distribution_jsonl_stage(
     llm_table: str = "llm.entry_enrichments",
     artifact_table: str = "export.artifacts",
     models: Sequence[str] | None = None,
-    prompt_version: str = PROMPT_VERSION,
+    prompt_versions: Sequence[str] | None = None,
     definition_language: LanguageSpec | dict[str, Any] = DEFAULT_DEFINITION_LANGUAGE,
     parent_run_id: UUID | None = None,
     progress_callback: ProgressCallback | None = None,
 ) -> ExportJSONLResult:
     language = normalize_language_spec(definition_language)
-    prompt_bundle = build_prompt_bundle(
-        prompt_version=prompt_version,
-        definition_language=language,
-    )
+    versions = list(prompt_versions) if prompt_versions else [PROMPT_VERSION]
+    prompt_bundles = [
+        build_prompt_bundle(prompt_version=version, definition_language=language)
+        for version in versions
+    ]
+    prompt_bundle = prompt_bundles[0]
 
     with get_connection(settings) as conn:
         run_id = start_run(
@@ -48,8 +50,8 @@ def run_export_distribution_jsonl_stage(
                 "definitions_table": llm_table,
                 "artifact_table": artifact_table,
                 "models": list(models) if models else None,
-                "prompt_template_version": prompt_bundle.template_version,
-                "prompt_version": prompt_bundle.resolved_prompt_version,
+                "prompt_template_versions": [bundle.template_version for bundle in prompt_bundles],
+                "prompt_versions": [bundle.resolved_prompt_version for bundle in prompt_bundles],
                 "schema_version": DISTRIBUTION_SCHEMA_VERSION,
                 "artifact_role": "distribution",
                 "definition_language": language.as_dict(),
@@ -63,8 +65,7 @@ def run_export_distribution_jsonl_stage(
             stage=EXPORT_DISTRIBUTION_JSONL_STAGE,
             event="export_start",
             models=list(models) if models else None,
-            prompt_version=prompt_bundle.resolved_prompt_version,
-            prompt_template_version=prompt_bundle.template_version,
+            prompt_versions=[bundle.resolved_prompt_version for bundle in prompt_bundles],
             definition_language_code=language.code,
         )
         records = list(
@@ -73,7 +74,7 @@ def run_export_distribution_jsonl_stage(
                 curated_table=curated_table,
                 llm_table=llm_table,
                 models=models,
-                prompt_bundle=prompt_bundle,
+                prompt_bundles=prompt_bundles,
                 progress_callback=progress_callback,
             )
         )
@@ -117,8 +118,8 @@ def run_export_distribution_jsonl_stage(
                     "curated_table": curated_table,
                     "definitions_table": llm_table,
                     "models": list(models) if models else None,
-                    "prompt_template_version": prompt_bundle.template_version,
-                    "prompt_version": prompt_bundle.resolved_prompt_version,
+                    "prompt_template_versions": [bundle.template_version for bundle in prompt_bundles],
+                    "prompt_versions": [bundle.resolved_prompt_version for bundle in prompt_bundles],
                     "schema_version": DISTRIBUTION_SCHEMA_VERSION,
                     "artifact_role": "distribution",
                     "definition_language": language.as_dict(),
@@ -162,14 +163,18 @@ def iter_distribution_records(
     curated_table: str,
     llm_table: str,
     models: Sequence[str] | None,
-    prompt_bundle,
+    prompt_bundle=None,
+    prompt_bundles=None,
     progress_callback: ProgressCallback | None = None,
 ):
+    bundles = list(prompt_bundles) if prompt_bundles else [prompt_bundle]
+    if not bundles or bundles[0] is None:
+        raise ValueError("iter_distribution_records needs at least one prompt bundle")
     candidates = load_matching_enrichment_candidates(
         settings=settings,
         llm_table=llm_table,
         models=models,
-        prompt_bundle=prompt_bundle,
+        prompt_bundles=bundles,
     )
     reporter = ThrottledProgressReporter(progress_callback, stage=EXPORT_DISTRIBUTION_JSONL_STAGE)
     processed = 0
@@ -182,7 +187,7 @@ def iter_distribution_records(
         current_enrichment = select_matching_enrichment(
             curated_payload=curated_payload,
             entry_id=entry_id,
-            prompt_bundle=prompt_bundle,
+            prompt_bundles=bundles,
             candidates=candidates,
         )
         if current_enrichment is None:
@@ -193,20 +198,20 @@ def iter_distribution_records(
             skipped_unenriched += 1
             continue
         if (
-            current_enrichment["definition_language_code"] != prompt_bundle.definition_language.code
+            current_enrichment["definition_language_code"] != bundles[0].definition_language.code
             or (current_enrichment["definition_language_name"] or "").strip()
-            != prompt_bundle.definition_language.name
+            != bundles[0].definition_language.name
         ):
             raise ValueError(
                 "Selected enrichment does not match the requested definition language contract: "
-                f"expected {prompt_bundle.definition_language.as_dict()}, "
+                f"expected {bundles[0].definition_language.as_dict()}, "
                 f"got {{'code': {current_enrichment['definition_language_code']!r}, "
                 f"'name': {current_enrichment['definition_language_name']!r}}}"
             )
         document = build_distribution_document(
             curated_payload=curated_payload,
             llm_payload=current_enrichment["response_payload"],
-            definition_language=prompt_bundle.definition_language,
+            definition_language=bundles[0].definition_language,
         )
         if document is not None:
             validate_distribution_document(document)

@@ -389,8 +389,12 @@ def load_matching_enrichment_candidates(
     settings: RuntimeSettings,
     llm_table: str,
     models: Sequence[str] | None,
-    prompt_bundle: PromptBundle,
+    prompt_bundle: PromptBundle | None = None,
+    prompt_bundles: Sequence[PromptBundle] | None = None,
 ) -> dict[str, dict[str, dict[str, Any]]]:
+    bundles = list(prompt_bundles) if prompt_bundles else [prompt_bundle]
+    if not bundles or bundles[0] is None:
+        raise ValueError("load_matching_enrichment_candidates needs at least one prompt bundle")
     llm_identifier = identifier_from_dotted(llm_table)
     query = sql.SQL(
         """
@@ -405,13 +409,13 @@ def load_matching_enrichment_candidates(
             input_hash
         FROM {}
         WHERE status = 'succeeded'
-          AND prompt_version = %s
+          AND prompt_version = ANY(%s)
           AND definition_language_code = %s
         """
     ).format(llm_identifier)
     params: list[Any] = [
-        prompt_bundle.resolved_prompt_version,
-        prompt_bundle.definition_language.code,
+        [bundle.resolved_prompt_version for bundle in bundles],
+        bundles[0].definition_language.code,
     ]
     if models:
         query += sql.SQL(" AND model = ANY(%s)")
@@ -444,15 +448,25 @@ def select_matching_enrichment(
     *,
     curated_payload: dict[str, Any],
     entry_id: Any,
-    prompt_bundle: PromptBundle,
+    prompt_bundle: PromptBundle | None = None,
+    prompt_bundles: Sequence[PromptBundle] | None = None,
     candidates: dict[str, dict[str, dict[str, Any]]],
 ) -> dict[str, Any] | None:
-    request_payload = build_enrichment_request_payload(
-        curated_payload,
-        prompt_bundle=prompt_bundle,
-    )
-    input_hash = compute_request_hash(request_payload)
-    return candidates.get(str(entry_id), {}).get(input_hash)
+    """Match by current-payload hash, honoring bundle preference order."""
+    bundles = list(prompt_bundles) if prompt_bundles else [prompt_bundle]
+    entry_candidates = candidates.get(str(entry_id), {})
+    for bundle in bundles:
+        if bundle is None:
+            continue
+        request_payload = build_enrichment_request_payload(
+            curated_payload,
+            prompt_bundle=bundle,
+        )
+        input_hash = compute_request_hash(request_payload)
+        match = entry_candidates.get(input_hash)
+        if match is not None:
+            return match
+    return None
 
 
 def iter_export_documents(

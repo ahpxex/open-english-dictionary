@@ -4,7 +4,7 @@ import json
 from typing import Any
 
 
-REVIEW_PROMPT_VERSION = "definition_review_v1"
+REVIEW_PROMPT_VERSION = "definition_review_v2"
 REVIEW_MAX_TOKENS = 3000
 
 REVIEW_VERDICTS = ("pass", "minor_issues", "major_issues")
@@ -35,6 +35,17 @@ English-Chinese learner's dictionary. You receive the curated source skeleton
 Judge the generated content strictly against the source and against learner
 usefulness. Return exactly one JSON object and nothing else.
 
+Calibration — read this before judging:
+- The dictionary's explanation style is DELIBERATE synthesis: explanations are
+  anchored to an entry-wide memory hook and paraphrase the source glosses in
+  learner-friendly language instead of translating them word for word. Do not
+  flag paraphrase, reorganization, or hook-anchored framing as unfaithful.
+  Only flag unfaithful_to_source when a meaning is actually changed, invented,
+  or entirely lost.
+- Partial coverage of a multi-part gloss, thin-but-correct explanations of
+  marginal senses, and disagreements of taste about priority markings are
+  minor observations, never major.
+
 The JSON object must contain:
 - scores: object with integer scores from 1 (unusable) to 5 (excellent) for
   exactly these keys:
@@ -51,9 +62,10 @@ The JSON object must contain:
 - priority_ok: boolean — are the core/common/rare markings sensible for a
   learner (core = the everyday heart of the word)?
 - verdict: exactly one of "pass", "minor_issues", "major_issues".
-  major_issues means a learner would be misled (factual error, wrong
-  translation, hallucinated meaning); minor_issues means real but
-  non-misleading flaws; pass means you would ship it.
+  major_issues is reserved for content that would actively mislead a learner:
+  a factual error, a wrong translation, a hallucinated meaning, or an example
+  demonstrating incorrect language. Anything real but non-misleading is
+  minor_issues. pass means you would ship it as is.
 - issues: array (possibly empty) of objects, each with:
   - kind: one of "hallucination", "mistranslation", "unfaithful_to_source",
     "unnatural_example", "restated_usage_note", "priority_error",
