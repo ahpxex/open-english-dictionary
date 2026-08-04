@@ -353,6 +353,12 @@ def build_pos_groups(
         deduped_relations = dedupe_relations(group["relations"])
         group["relations"] = deduped_relations
         group["senses"] = dedupe_senses(group["senses"])
+        # Sense ids are assigned per raw record inside normalize_senses, so a
+        # group merged from several records carries colliding ids (two s1
+        # rows). Renumber sequentially per group: sense_id is positional
+        # identity within the group and must be unique by construction.
+        for index, sense in enumerate(group["senses"], start=1):
+            sense["sense_id"] = f"s{index}"
         pos_groups.append(group)
 
     pos_groups.sort(key=lambda item: (item["pos"], item["etymology_id"] or ""))

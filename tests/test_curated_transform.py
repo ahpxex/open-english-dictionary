@@ -416,3 +416,31 @@ def test_build_entry_hash_is_stable_for_equivalent_payloads() -> None:
     second = curated.build_entry_hash(copy.deepcopy(entry))
 
     assert first == second
+
+
+def test_pos_group_sense_ids_are_unique_after_merging_raw_rows() -> None:
+    # Regression: sense ids were numbered per raw record, so a group merged
+    # from two records with the same (pos, etymology) carried two s1 senses.
+    # That corrupted skeleton made 1,143 of 1,145 full-run generation
+    # failures inevitable: the model faithfully echoed the duplicate id and
+    # validation rejected it.
+    rows = [
+        make_raw_row(
+            row_id=1,
+            pos="suffix",
+            payload_overrides={"senses": [{"glosses": ["first gloss"]}, {"glosses": ["second gloss"]}]},
+        ),
+        make_raw_row(
+            row_id=2,
+            source_line=11,
+            pos="suffix",
+            payload_overrides={"senses": [{"glosses": ["third gloss"]}]},
+        ),
+    ]
+    output = curated.build_curated_entry(rows)
+
+    assert output.entry is not None
+    groups = output.entry["pos_groups"]
+    assert len(groups) == 1
+    sense_ids = [sense["sense_id"] for sense in groups[0]["senses"]]
+    assert sense_ids == ["s1", "s2", "s3"]
