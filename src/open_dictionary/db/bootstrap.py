@@ -352,6 +352,40 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
             """,
         ),
     ),
+    Migration(
+        version="20260804_llm_quality_reviews_v6",
+        statements=(
+            """
+            CREATE TABLE IF NOT EXISTS llm.quality_reviews (
+                review_id BIGSERIAL PRIMARY KEY,
+                run_id UUID NOT NULL REFERENCES meta.pipeline_runs(run_id),
+                entry_id UUID NOT NULL REFERENCES curated.entries(entry_id) ON DELETE CASCADE,
+                enrichment_input_hash TEXT NOT NULL,
+                review_prompt_version TEXT NOT NULL,
+                judge_model TEXT NOT NULL,
+                sample_seed TEXT NOT NULL,
+                stratum TEXT NOT NULL,
+                sampling_weight DOUBLE PRECISION NOT NULL,
+                status TEXT NOT NULL CHECK (status IN ('succeeded', 'failed')),
+                verdict TEXT,
+                scores JSONB,
+                issues JSONB,
+                raw_response TEXT,
+                error TEXT,
+                generation_metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS llm_quality_reviews_entry_idx
+            ON llm.quality_reviews (entry_id, review_prompt_version)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS llm_quality_reviews_run_idx
+            ON llm.quality_reviews (run_id)
+            """,
+        ),
+    ),
 )
 
 

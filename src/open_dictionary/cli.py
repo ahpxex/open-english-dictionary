@@ -29,6 +29,7 @@ from .stages.curated_build import (
 )
 from .stages.curated_build.word_selection import build_word_selection_rule
 from .qa.audit import audit_definitions
+from .qa.review_stage import QUALITY_REVIEW_STAGE, run_quality_review_stage
 from .stages.export_distribution_jsonl import (
     DISTRIBUTION_SCHEMA_VERSION,
     EXPORT_DISTRIBUTION_JSONL_STAGE,
@@ -302,6 +303,107 @@ def _cmd_curated_build(args: argparse.Namespace) -> int:
         ),
     )
     return 0
+
+
+def _cmd_review_definitions(args: argparse.Namespace) -> int:
+    settings = _get_settings(args)
+    progress_callback = _make_progress_callback()
+    model_env_file = args.model_env_file or args.env_file
+
+    try:
+        result = run_quality_review_stage(
+            settings=settings,
+            env_file=model_env_file,
+            llm_table=args.definitions_table,
+            review_table=args.review_table,
+            generation_prompt_version_like=args.prompt_version_like,
+            sample_size=args.sample_size,
+            seed=args.seed,
+            max_workers=args.max_workers,
+            max_retries=args.max_retries,
+            progress_callback=progress_callback,
+        )
+    except (psycopg.Error, ValueError, RuntimeError) as exc:
+        args._parser.error(str(exc))
+
+    report = _summarize_reviews(settings, review_table=args.review_table, seed=args.seed)
+    _print_command_result(
+        "review-definitions",
+        stage=QUALITY_REVIEW_STAGE,
+        run_id=str(result.run_id),
+        sampled=result.sampled,
+        reviewed=result.reviewed,
+        failed=result.failed,
+        skipped_existing=result.skipped_existing,
+        report=report,
+    )
+    return 0
+
+
+def _summarize_reviews(settings, *, review_table: str, seed: str) -> dict:
+    review_identifier = _identifier_from_dotted(review_table)
+    with get_connection(settings) as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                sql.SQL(
+                    """
+                    SELECT verdict,
+                           count(*),
+                           sum(sampling_weight),
+                           avg((scores->>'accuracy')::int),
+                           avg((scores->>'examples')::int)
+                    FROM {}
+                    WHERE status = 'succeeded' AND sample_seed = %s
+                    GROUP BY verdict
+                    """
+                ).format(review_identifier),
+                (seed,),
+            )
+            verdict_rows = cursor.fetchall()
+            cursor.execute(
+                sql.SQL(
+                    """
+                    SELECT issue->>'kind', count(*)
+                    FROM {}, jsonb_array_elements(issues) issue
+                    WHERE status = 'succeeded' AND sample_seed = %s
+                    GROUP BY 1 ORDER BY 2 DESC
+                    """
+                ).format(review_identifier),
+                (seed,),
+            )
+            issue_rows = cursor.fetchall()
+            cursor.execute(
+                sql.SQL(
+                    """
+                    SELECT stratum,
+                           count(*),
+                           count(*) FILTER (WHERE verdict = 'major_issues')
+                    FROM {}
+                    WHERE status = 'succeeded' AND sample_seed = %s
+                    GROUP BY stratum ORDER BY 3 DESC, stratum
+                    """
+                ).format(review_identifier),
+                (seed,),
+            )
+            stratum_rows = cursor.fetchall()
+
+    total_weight = sum(float(row[2]) for row in verdict_rows) or 1.0
+    return {
+        "verdicts": {
+            row[0]: {
+                "count": row[1],
+                "weighted_share": round(float(row[2]) / total_weight, 4),
+                "avg_accuracy": round(float(row[3]), 2) if row[3] is not None else None,
+                "avg_examples": round(float(row[4]), 2) if row[4] is not None else None,
+            }
+            for row in verdict_rows
+        },
+        "issue_kinds": {row[0]: row[1] for row in issue_rows},
+        "strata": [
+            {"stratum": row[0], "reviewed": row[1], "major_issues": row[2]}
+            for row in stratum_rows
+        ],
+    }
 
 
 def _cmd_audit_definitions(args: argparse.Namespace) -> int:
@@ -1037,6 +1139,55 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     _add_database_options(audit_parser)
     audit_parser.set_defaults(func=_cmd_audit_definitions, _parser=audit_parser)
+
+    review_parser = subparsers.add_parser(
+        "review-definitions",
+        help="LLM-judged quality review over a stratified sample of generated entries.",
+    )
+    review_parser.add_argument(
+        "--definitions-table",
+        default="llm.entry_enrichments",
+        help="Generated-definitions table (default: %(default)s).",
+    )
+    review_parser.add_argument(
+        "--review-table",
+        default="llm.quality_reviews",
+        help="Review results table (default: %(default)s).",
+    )
+    review_parser.add_argument(
+        "--prompt-version-like",
+        default="%",
+        help="SQL LIKE filter on the generation prompt_version (default: all).",
+    )
+    review_parser.add_argument(
+        "--sample-size",
+        type=int,
+        default=1000,
+        help="Stratified sample size (default: %(default)s).",
+    )
+    review_parser.add_argument(
+        "--seed",
+        default="review-v1",
+        help="Deterministic sampling seed; same seed resumes the same sample (default: %(default)s).",
+    )
+    review_parser.add_argument(
+        "--max-workers",
+        type=int,
+        default=8,
+        help="Concurrent judge calls (default: %(default)s).",
+    )
+    review_parser.add_argument(
+        "--max-retries",
+        type=int,
+        default=3,
+        help="Retries per judge call (default: %(default)s).",
+    )
+    review_parser.add_argument(
+        "--model-env-file",
+        help="Env file with the judge provider pool; defaults to --env-file.",
+    )
+    _add_database_options(review_parser)
+    review_parser.set_defaults(func=_cmd_review_definitions, _parser=review_parser)
 
     llm_enrich_parser = subparsers.add_parser(
         "generate-definitions",
