@@ -1,10 +1,15 @@
 # Open Dictionary
 
-面向中文学习者的开放英语词典,以及生产它的可复现数据管线。
+面向语言学习者的开放英语词典,以及生产它的可复现数据管线。
 
-当前发布版本 **[v2.0](https://github.com/ahpxex/open-dictionary/releases/tag/v2.0)**:
-**84,212 个词条**,从 Wiktionary/Wiktextract 快照出发,经词频筛选、结构化
-LLM 生成与契约校验后产出,全链路带运行血缘,可从源数据完整重建。
+词典的**定义语言是参数化的**:同一条管线可以为任何目标语言生成学习者释义,
+中文(简体)是第一个发布的定义语言,也是当前的默认值;其他语言只需切换
+`--definition-language-*` 参数即可构建(内容契约、prompt 版本与校验随语言联动)。
+
+当前发布版本 **[v2.0](https://github.com/ahpxex/open-dictionary/releases/tag/v2.0)**
+(简体中文定义语言构建):**84,212 个词条**,从 Wiktionary/Wiktextract 快照
+出发,经词频筛选、结构化 LLM 生成与契约校验后产出,全链路带运行血缘,可从
+源数据完整重建。
 
 ## 下载
 
@@ -20,8 +25,10 @@ LLM 生成与契约校验后产出,全链路带运行血缘,可从源数据完�
 ## 词条长什么样
 
 每个词条包含:一条贯穿主要义项的**记忆主线**、三级**义项优先级**
-(core/common/rare,客户端可默认折叠生僻义)、核心与常用义项的**双语例句**、
-句式导向的**用法说明**,以及词形变化、US/UK 音标、词源注记和关系词。
+(core/common/rare,客户端可默认折叠生僻义)、核心与常用义项的**双语例句**
+(英文原句 + 定义语言翻译)、句式导向的**用法说明**,以及词形变化、US/UK
+音标、词源注记和关系词。所有解释性字段均以目标定义语言写成,下面的示例来自
+简体中文构建:
 
 ```json
 {
@@ -116,8 +123,19 @@ LLM_PROVIDERS='[
 
 ### 定义语言
 
-默认生成简体中文释义;`--definition-language-code` / `--definition-language-name`
-可切换目标语言(词条内容与校验契约随之切换,prompt 版本自动带语言后缀)。
+定义语言是管线的一等参数,默认 `zh-Hans`(简体中文)。构建其他语言版本:
+
+```bash
+uv run opend generate-definitions \
+  --definition-language-code fr --definition-language-name French
+uv run opend export-distribution \
+  --definition-language-code fr --definition-language-name French \
+  --output data/export/en-headwords-fr-definitions.jsonl
+```
+
+生成 prompt、输出校验、断点续跑与导出匹配都按(prompt 版本 × 定义语言)隔离,
+多个语言版本可在同一数据库中并存互不干扰;prompt 版本自动携带语言后缀
+(如 `curated_v1_distribution_fields_v14__deflang__fr`)。
 
 ## 质量体系
 
