@@ -351,6 +351,15 @@ def _summarize_reviews(settings, *, review_table: str, seed: str, review_prompt_
     review_identifier = _identifier_from_dotted(review_table)
     with get_connection(settings) as conn:
         with conn.cursor() as cursor:
+            latest_reviews = sql.SQL(
+                """
+                SELECT DISTINCT ON (entry_id) *
+                FROM {}
+                WHERE status = 'succeeded' AND sample_seed = %s
+                  AND review_prompt_version = %s
+                ORDER BY entry_id, created_at DESC
+                """
+            ).format(review_identifier)
             cursor.execute(
                 sql.SQL(
                     """
@@ -359,12 +368,10 @@ def _summarize_reviews(settings, *, review_table: str, seed: str, review_prompt_
                            sum(sampling_weight),
                            avg((scores->>'accuracy')::int),
                            avg((scores->>'examples')::int)
-                    FROM {}
-                    WHERE status = 'succeeded' AND sample_seed = %s
-                      AND review_prompt_version = %s
+                    FROM ({latest}) latest
                     GROUP BY verdict
                     """
-                ).format(review_identifier),
+                ).format(latest=latest_reviews),
                 (seed, review_prompt_version),
             )
             verdict_rows = cursor.fetchall()
@@ -372,12 +379,10 @@ def _summarize_reviews(settings, *, review_table: str, seed: str, review_prompt_
                 sql.SQL(
                     """
                     SELECT issue->>'kind', count(*)
-                    FROM {}, jsonb_array_elements(issues) issue
-                    WHERE status = 'succeeded' AND sample_seed = %s
-                      AND review_prompt_version = %s
+                    FROM ({latest}) latest, jsonb_array_elements(latest.issues) issue
                     GROUP BY 1 ORDER BY 2 DESC
                     """
-                ).format(review_identifier),
+                ).format(latest=latest_reviews),
                 (seed, review_prompt_version),
             )
             issue_rows = cursor.fetchall()
@@ -387,12 +392,10 @@ def _summarize_reviews(settings, *, review_table: str, seed: str, review_prompt_
                     SELECT stratum,
                            count(*),
                            count(*) FILTER (WHERE verdict = 'major_issues')
-                    FROM {}
-                    WHERE status = 'succeeded' AND sample_seed = %s
-                      AND review_prompt_version = %s
+                    FROM ({latest}) latest
                     GROUP BY stratum ORDER BY 3 DESC, stratum
                     """
-                ).format(review_identifier),
+                ).format(latest=latest_reviews),
                 (seed, review_prompt_version),
             )
             stratum_rows = cursor.fetchall()
