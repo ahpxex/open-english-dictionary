@@ -180,6 +180,13 @@ uv run opend export-audit --output data/export/audit.jsonl --include-unenriched
 - `docs/system_framing.md` — 系统定位与分层框架
 - `CLAUDE.md` — 管线章程:分阶段契约、可复现性铁律、数据库与测试要求
 
+## 许可
+
+- **代码**:MIT(见 `LICENSE`)
+- **词典数据工件**:CC BY-SA 4.0(见 `LICENSE-DATA.md`)——数据是 Wiktionary
+  内容的衍生作品,依 ShareAlike 条款必须以相同许可发布并署名 Wiktionary 贡献者;
+  再分发或二次加工数据时同样受此约束
+
 ## 可复现性
 
 每次运行都有持久 `run_id` 并记录上游依赖运行;prompt 全文入库版本化;工件元数据
