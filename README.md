@@ -22,6 +22,14 @@
 | `distribution.sqlite.gz` | 同内容的 SQLite 打包,义项带优先级索引列,客户端可直接查询 |
 | `audit.jsonl.gz` | 审计工件:保留 curated 层与生成层的完整分离视图 |
 
+## 客户端
+
+不想自己处理工件的话,[**Aictionary**](https://github.com/ahpxex/Aictionary) 是一个
+现成的桌面客户端(Tauri 2 + React,macOS / Windows / Linux):它消费
+`distribution_entry_v5` 契约,从本仓库的 Release 下载 `distribution.sqlite.gz`
+到本地,查询全部离线完成,并按契约实现了义项优先级折叠、关系词分组与 US/UK
+音标聚合等展示规则。本仓库只负责数据,客户端的问题请到该仓库反馈。
+
 ## 词条长什么样
 
 每个词条包含:一条贯穿主要义项的**记忆主线**、三级**义项优先级**
